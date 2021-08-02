@@ -247,7 +247,9 @@ class AneurysmSegDataset(torch.utils.data.IterableDataset):
             if self.subset == 'train':
                 pos_neg_ratio = self.config['data'].get('train_pos_neg_ratio', [1, 1])
                 for i, item in enumerate(
-                        ane_seg_patch_generator(instance, self.config, self.logger, sliding_window=False,
+                        ane_seg_patch_generator(instance, self.config, self.logger,
+                                                reading_file_fields=self.task_list_queue.reading_file_fields,
+                                                sliding_window=False,
                                                 balance_label=True, data_aug=True, pos_neg_ratio=pos_neg_ratio)):
                     if self.config['data'].get('debug_mode', False) and i > 5:
                         break
@@ -257,7 +259,9 @@ class AneurysmSegDataset(torch.utils.data.IterableDataset):
             else:
                 pos_neg_ratio = self.config['data'].get('eval_pos_neg_ratio', [1, 1])
                 for i, item in enumerate(
-                        ane_seg_patch_generator(instance, self.config, self.logger, sliding_window=False,
+                        ane_seg_patch_generator(instance, self.config, self.logger,
+                                                reading_file_fields=self.task_list_queue.reading_file_fields,
+                                                sliding_window=False,
                                                 balance_label=True, data_aug=False,
                                                 random_seed=10, pos_neg_ratio=pos_neg_ratio)):
                     if self.config['data'].get('debug_mode', False) and i > 5:
@@ -288,6 +292,7 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         self.patch_size = config['data']['patch_size']
         self.overlap_step = config['data']['overlap_step']
         self.with_global = config['model']['with_global']
+        self.reading_file_fields = [*config['data']['features']]
         self.img = None
         self.itk_image = None
         self.meta = None
@@ -295,52 +300,69 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
     def load(self, input_file_s, input_type):
         if input_type == 'dcm':
             reader = sitk.ImageSeriesReader()
-            reader.SetFileNames(input_file_s)
-            ins_id = os.path.basename(os.path.dirname(input_file_s[0]))
+            ins_id = os.path.basename(os.path.dirname(input_file_s[0][0]))
         elif input_type == 'nii':
             reader = sitk.ImageFileReader()
-            reader.SetFileName(input_file_s)
-            ins_id = os.path.basename(input_file_s).split('.')[0]
-        self.itk_image = reader.Execute()
+            ins_id = os.path.basename(input_file_s[0]).split('.')[0]
+        self.img = []
+        self.itk_image = []
+        for input_file_id, input_file in enumerate(input_file_s):
+            if input_type == 'dcm':
+                reader.SetFileNames(input_file)
+            elif input_type == 'nii':
+                reader.SetFileName(input_file)
+            self.itk_image.append(reader.Execute())
 
-        self.img = {}
-        self.img['data'] = sitk.GetArrayFromImage(self.itk_image).astype(np.float32)
-        self.img['original_spacing'] = np.array(self.itk_image.GetSpacing(), np.float32)[[2, 1, 0]]
-        self.img['original_size'] = np.array(self.itk_image.GetSize(), np.int32)[[2, 1, 0]]
-        self.img['origin'] = self.itk_image.GetOrigin()
-        self.img['direction'] = self.itk_image.GetDirection()
-        self.img['spacing'] = self.spacing
-        if self.spacing is None:
-            self.img['spacing'] = self.img['original_spacing']
-            self.img['size'] = self.img['original_size']
-        else:
-            self.img['data'] = resize_image(self.img['data'], self.img['original_spacing'], self.spacing)
-            self.img['size'] = np.array(self.img['data'].shape)
+            self.img.append({})
+            self.img[input_file_id]['data'] = sitk.GetArrayFromImage(self.itk_image[input_file_id]).astype(np.float32)
+            self.img[input_file_id]['original_spacing'] = np.array(self.itk_image[input_file_id].GetSpacing(), np.float32)[[2, 1, 0]]
+            self.img[input_file_id]['original_size'] = np.array(self.itk_image[input_file_id].GetSize(), np.int32)[[2, 1, 0]]
+            self.img[input_file_id]['origin'] = self.itk_image[input_file_id].GetOrigin()
+            self.img[input_file_id]['direction'] = self.itk_image[input_file_id].GetDirection()
+            self.img[input_file_id]['spacing'] = self.spacing
+            if self.spacing is None:
+                self.img[input_file_id]['spacing'] = self.img[input_file_id]['original_spacing']
+                self.img[input_file_id]['size'] = self.img[input_file_id]['original_size']
+            else:
+                self.img[input_file_id]['data'] = resize_image(self.img[input_file_id]['data'],
+                                                               self.img[input_file_id]['original_spacing'],
+                                                               self.spacing)
+                self.img[input_file_id]['size'] = np.array(self.img[input_file_id]['data'].shape)
 
-        self.meta = {'id': ins_id, 'hospital': 'unknown', 'spacing': self.img['spacing']}
+        self.meta = {'id': ins_id, 'hospital': 'unknown', 'spacing': self.img[0]['spacing']}
 
-        self.patch_starts = get_sliding_window_patch_starts(self.img['data'], self.patch_size, self.overlap_step)
+        img_size = self.img[0]['original_size']
+        for img in self.img:
+            if (img_size != img['original_size']).any():
+                self.logger.critical('All input images must have the same size')
+                exit(1)
+
+        self.patch_starts = get_sliding_window_patch_starts(self.img[0]['data'], self.patch_size, self.overlap_step)
 
     def __iter__(self):
-        input_glo_img = self.img['data']
-        brain_mask_glo_img = np.ones(self.img['size'], np.int32)
+        input_glo_img = [img['data'] for img in self.img]
+        brain_mask_glo_img = np.ones(self.img[0]['size'], np.int32)
         if self.with_global:
             global_localizer = GlobalLocalizer(brain_mask_glo_img)
-            cut_input_glo_img = global_localizer.cut_edge(input_glo_img, self.patch_size, is_mask=False)
+            cut_input_glo_img = [global_localizer.cut_edge(img, self.patch_size, is_mask=False) for img in input_glo_img]
 
         def _gen_patch(_starts):
             _ends = [_starts[i] + self.patch_size[i] for i in range(3)]
-            patch_cta_img = input_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
+            patch_exam_img = [img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
+                             for img in input_glo_img]
             patch_brain_mask_img = brain_mask_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1],
                                    _starts[2]:_ends[2]].copy()
 
             if self.with_global:
-                global_cta_img = cut_input_glo_img.copy()
+                global_exam_img = [img.copy() for img in cut_input_glo_img]
                 global_location_bbox = global_localizer.get_position_bbox(_starts, _ends, self.patch_size)
 
-            inputs = {'cta_img': patch_cta_img, 'brain_mask': patch_brain_mask_img}
+            inputs = {'brain_mask': patch_brain_mask_img}
+            for file_field, img in zip(self.reading_file_fields, patch_exam_img):
+                inputs[file_field.replace('_file', '')] = img
             if self.with_global:
-                inputs['global_cta_img'] = global_cta_img
+                for file_field, img in zip(self.reading_file_fields, global_exam_img):
+                    inputs['global_' + file_field.replace('_file', '')] = img
                 inputs['global_patch_location_bbox'] = global_location_bbox
 
             meta = self.meta.copy()
@@ -377,7 +399,7 @@ class AneurysmSegTestManager:
 
     @property
     def instance_shape(self):
-        return self.test_dataset.img['size']
+        return self.test_dataset.img[0]['size']
 
     @property
     def patch_starts(self):
@@ -392,29 +414,39 @@ class AneurysmSegTestManager:
 
     def save_prediction(self, prediction, output_file):
         pred_itk_image = sitk.GetImageFromArray(prediction)
-        pred_itk_image.CopyInformation(self.test_dataset.itk_image)
+        pred_itk_image.CopyInformation(self.test_dataset.itk_image[0])
         sitk.WriteImage(pred_itk_image, output_file)
 
     def restore_spacing(self, prediction, is_mask=True):
         return self.test_dataset.restore_spacing(prediction, is_mask)
 
 
-def ane_seg_patch_generator(data, config, logger, sliding_window=False, balance_label=True,
+def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
+                            sliding_window=False, balance_label=True,
                             data_aug=True, random_seed=None, pos_neg_ratio=(1, 1)):
     """
     yield patches of aneurysm segmentation
     :param data: images dict
     :param config: config dict
+    :param logger: logger logging.Logger
+    :param reading_file_fields: csv file fields dict
     :param sliding_window: false to random select negative samples
     :param balance_label: if true, repeat positive samples to balance labels.
     :param data_aug: useful for training
     :param pos_neg_ratio: only work if balance_label is true
     :return: input_patch, label_patch
     """
+    if reading_file_fields is None:
+        reading_file_fields = {'cta_img_file': 'image', 'aneurysm_seg_file': 'mask'}
+    img_files = [key for (key, value) in reading_file_fields.items() if value == 'image']
     data_glo = data['data']
-    meta = {'id': data['id'], 'hospital': data['hospital'], 'spacing': data['data']['cta_img_file']['spacing']}
+    meta = {'id': data['id'], 'hospital': data['hospital'], 'spacing': data['data'][img_files[0]]['spacing']}
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
-    input_glo_img = data_glo['cta_img_file']['data'].astype(np.float32)
+    # print("np.unique(label_glo_img) =", np.unique(label_glo_img))
+    # print("label_glo_img.shape =", label_glo_img.shape)
+    label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
+    # print("np.unique(label_glo_img) =", np.unique(label_glo_img))
+    input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
         brain_mask_glo_img = data_glo['brain_mask_file']['data'].astype(np.int32)
     else:
@@ -423,66 +455,94 @@ def ane_seg_patch_generator(data, config, logger, sliding_window=False, balance_
     overlap_step = config['data']['overlap_step']
     with_global = config['model']['with_global']
     assert len(patch_size) == len(overlap_step)
-    if label_glo_img.shape != input_glo_img.shape or label_glo_img.shape != brain_mask_glo_img.shape:
+
+    match_size = True
+    for input_glo_img in input_glo_img_list:
+        match_size = match_size and label_glo_img.shape == input_glo_img.shape
+        if not match_size:
+            break
+    match_size = match_size and label_glo_img.shape == brain_mask_glo_img.shape
+    if not match_size:
         logger.warning(
             'Subject %s has different shapes among cta_img, brain_mask_img and aneyrysm_seg_img' % data['id'])
         return None
+
     if any([label_glo_img.shape[i] < patch_size[i] for i in range(3)]):
         logger.warning('Subject %s is too small and cannot fit in one patch.' % data['id'])
         return None
 
     if with_global:
         global_localizer = GlobalLocalizer(brain_mask_glo_img)
-        cut_input_glo_img = global_localizer.cut_edge(input_glo_img, [96, 96, 96], is_mask=False)
+        cut_input_glo_img_list = []
+        for input_glo_img in input_glo_img_list:
+            cut_input_glo_img_list.append(global_localizer.cut_edge(input_glo_img, [96, 96, 96], is_mask=False))
 
     def _gen_patch(_starts):
         _ends = [_starts[i] + patch_size[i] for i in range(3)]
-        patch_cta_img = input_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
+        patch_exam_img_list = []
+        for input_glo_img in input_glo_img_list:
+            patch_exam_img_list.append(input_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy())
         patch_brain_mask_img = brain_mask_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
         patch_label_img = label_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
-        if patch_cta_img.shape != patch_brain_mask_img.shape or patch_cta_img.shape != patch_label_img.shape:
-            logger.warning('Different shapes for patch_cta_img, patch_brain_mask_img and patch_label_img: %s, %s, %s'
-                           % (patch_cta_img.shape, patch_brain_mask_img.shape, patch_label_img.shape))
-            return None
+
+        match_patch_size = True
+        for patch_exam_img in patch_exam_img_list:
+            match_patch_size = match_patch_size and patch_exam_img.shape != patch_brain_mask_img.shape
+            match_patch_size = match_patch_size and patch_exam_img.shape != patch_label_img.shape
+            if not match_size:
+                logger.warning('Different shapes for patch_exam_img, patch_brain_mask_img and patch_label_img: %s, %s, %s'
+                               % (patch_exam_img.shape, patch_brain_mask_img.shape, patch_label_img.shape))
+                return None
+
         if with_global:
-            global_cta_img = cut_input_glo_img.copy()
+            global_exam_img_list = []
+            for cut_input_glo_img in cut_input_glo_img_list:
+                global_exam_img_list.append(cut_input_glo_img.copy())
             global_location_mask = global_localizer.get_position_map(_starts, _ends, [96, 96, 96])
             global_label = np.array(1 if patch_label_img.sum() > 3 else 0)
         if data_aug:
-            patch_cta_img += np.random.normal(0.0, 1.0, patch_cta_img.shape)
-            all_arrays = [patch_cta_img, patch_brain_mask_img, patch_label_img]
+            for patch_exam_img_id in range(len(patch_exam_img_list)):
+                patch_exam_img_list[patch_exam_img_id] += np.random.normal(0.0, 1.0,
+                                                                           patch_exam_img_list[patch_exam_img_id].shape)
+            all_arrays = [*patch_exam_img_list, patch_brain_mask_img, patch_label_img]
             bundle = np.stack(all_arrays)
             ran_1 = [np.random.rand() > 0.5 for _ in range(3)]
             bundle = random_flip_all(bundle, ran_1)
 
-            patch_cta_img, patch_brain_mask_img, patch_label_img = np.split(bundle, 3)
-            patch_cta_img = np.squeeze(patch_cta_img.copy(), 0)
+            *patch_exam_img_list, patch_brain_mask_img, patch_label_img = np.split(bundle, bundle.shape[0])
+            for patch_exam_img_id in range(len(patch_exam_img_list)):
+                patch_exam_img_list[patch_exam_img_id] = np.squeeze(patch_exam_img_list[patch_exam_img_id].copy(), 0)
             patch_brain_mask_img = np.squeeze(patch_brain_mask_img.copy(), 0)
             patch_label_img = np.squeeze(patch_label_img.copy(), 0)
 
             if with_global:
-                global_arrays = [global_cta_img, global_location_mask]
+                global_arrays = [*global_exam_img_list, global_location_mask]
                 global_bundle = np.stack(global_arrays)
                 global_bundle = random_flip_all(global_bundle, ran_1)
 
-                global_cta_img, global_location_mask = np.split(global_bundle, 2)
-                global_cta_img = np.squeeze(global_cta_img.copy(), 0)
+                *global_exam_img_list, global_location_mask = np.split(global_bundle, global_bundle.shape[0])
+                for global_exam_img_id in range(len(global_exam_img_list)):
+                    global_exam_img_list[global_exam_img_id] = np.squeeze(global_exam_img_list[global_exam_img_id].copy(), 0)
                 global_location_mask = np.squeeze(global_location_mask.copy(), 0)
 
         if with_global:
             global_location_bbox = binary_mask2bbox(global_location_mask)
 
-        inputs = {'cta_img': patch_cta_img, 'brain_mask': patch_brain_mask_img}
+        inputs = dict()
+        for input_id in range(len(img_files)):
+            inputs[img_files[input_id].replace('_file', '')] = patch_exam_img_list[input_id]
+        inputs['brain_mask'] = patch_brain_mask_img
         targets = {'aneurysm_seg': patch_label_img}
         if with_global:
-            inputs['global_cta_img'] = global_cta_img
+            for input_id in range(len(img_files)):
+                inputs['global_' + img_files[input_id].replace('_file', '')] = global_exam_img_list[input_id]
             inputs['global_patch_location_bbox'] = global_location_bbox
             targets['global_aneurysm_label'] = global_label
         return inputs, targets, meta
 
     if not sliding_window:
         # compute patches number (50-300 samples per study)
-        sum_brain_mask_number = 1 * np.sum(brain_mask_glo_img) // (patch_size[0] * patch_size[1] * patch_size[2])
+        sum_brain_mask_number = 1 * np.sum(brain_mask_glo_img[brain_mask_glo_img == 1]) // (patch_size[0] * patch_size[1] * patch_size[2])
         logger.debug('number of patches generated in %s is %s' % (data['id'], sum_brain_mask_number))
 
         pos_region_centers = get_positive_region_centers(label_glo_img)
@@ -514,7 +574,7 @@ def ane_seg_patch_generator(data, config, logger, sliding_window=False, balance_
                         starts[0] + patch_size[0] // 2, starts[1] + patch_size[1] // 2, starts[2] + patch_size[
                             2] // 2] > 0:
                         # avoid inputing all black imgs
-                        clipped_mask = (input_glo_img[starts[0]:starts[0] + patch_size[0],
+                        clipped_mask = (input_glo_img_list[0][starts[0]:starts[0] + patch_size[0],
                                         starts[1]:starts[1] + patch_size[1],
                                         starts[2]:starts[2] + patch_size[2]] > 0).astype(np.float32)
                         if np.mean(clipped_mask) > 0.05:
@@ -526,7 +586,7 @@ def ane_seg_patch_generator(data, config, logger, sliding_window=False, balance_
     # sliding window
     else:
         assert not balance_label, 'sliding_window do not support balance label now'
-        starts_list = get_sliding_window_patch_starts(input_glo_img, patch_size, overlap_step, brain_mask_glo_img)
+        starts_list = get_sliding_window_patch_starts(input_glo_img_list[0], patch_size, overlap_step, brain_mask_glo_img)
         logger.debug('number of patches generated in %s is %s' % (data['id'], len(starts_list)))
         for starts in starts_list:
             yield _gen_patch(starts)
@@ -748,8 +808,18 @@ def random_rotate(img, dim, do_it=None):
 
 def get_instances_from_file_or_folder(instance_file_or_folder, instance_type='nii', drop_phrase=None,
                                       require_phrase=None):
+    """
+    get list of paths pointing to the images of each exam
+    :param instance_file_or_folder: list of paths
+    :param instance_type: nii or dcm
+    :param drop_phrase: sequence of phrases. images whose path contains at least one of these phrases are dropped
+    :param require_phrase: sequence of phrases. images whose path doesn't contain all phrases are dropped
+    :return: list of tuples containing the path to the image inputs of the same exam
+    """
     assert instance_type in ['nii', 'dcm']
-    assert os.path.exists(instance_file_or_folder)
+    for file_or_folder in instance_file_or_folder:
+        if not os.path.exists(file_or_folder):
+            raise FileNotFoundError("file or folder %s not found" % file_or_folder)
 
     if drop_phrase is not None:
         if not (isinstance(drop_phrase, list) or isinstance(drop_phrase, tuple)):
@@ -760,33 +830,43 @@ def get_instances_from_file_or_folder(instance_file_or_folder, instance_type='ni
 
     instances = []
     if instance_type == 'nii':
-        if os.path.isdir(instance_file_or_folder):
-            for ins in os.listdir(instance_file_or_folder):
-                if ins.endswith('.nii.gz'):
-                    if drop_phrase is None or all([dp not in ins for dp in drop_phrase]):
-                        if require_phrase is None or all([rp in ins for rp in require_phrase]):
-                            instances.append(os.path.join(instance_file_or_folder, ins))
+        if os.path.isdir(instance_file_or_folder[0]):
+            for file in os.listdir(instance_file_or_folder[0]):
+                instance_file = []
+                if file.endswith('.nii.gz'):
+                    if drop_phrase is None or all([dp not in file for dp in drop_phrase]):
+                        if require_phrase is None or all([rp in file for rp in require_phrase]):
+                            instance_file.append(os.path.join(instance_file_or_folder[0], file))
+                            for folder in instance_file_or_folder[1:]:
+                                if os.path.exists(os.path.join(folder, file)):
+                                    instance_file.append(os.path.join(folder, file))
+                                else:
+                                    raise FileNotFoundError('File not found %s' % (os.path.join(folder, file)))
+                instances.append(tuple(instance_file))
         else:
-            if instance_file_or_folder.endswith('.nii.gz'):
-                if drop_phrase is None or all([dp not in instance_file_or_folder for dp in drop_phrase]):
-                    if require_phrase is None or all([rp in instance_file_or_folder for rp in require_phrase]):
-                        instances.append(instance_file_or_folder)
+            instance_file = []
+            for file in instance_file_or_folder:
+                if file.endswith('.nii.gz'):
+                    if drop_phrase is None or all([dp not in file for dp in drop_phrase]):
+                        if require_phrase is None or all([rp in file for rp in require_phrase]):
+                            instance_file.append(file)
+            instances.append(tuple(instance_file))
     else:
         reader = sitk.ImageSeriesReader()
 
-        def _find_base(_folder, _ins):
-            is_base = True
-            for item in os.listdir(_folder):
-                if os.path.isdir(os.path.join(_folder, item)):
-                    is_base = False
-                    _ins = _find_base(os.path.join(_folder, item), _ins)
-            if is_base:
-                dcm_files = reader.GetGDCMSeriesFileNames(_folder)
-                _ins.append(dcm_files)
-            return _ins
-
-        if os.path.isdir(instance_file_or_folder):
-            instances = _find_base(instance_file_or_folder, instances)
+        if os.path.isdir(instance_file_or_folder[0]):
+            for file in os.listdir(instance_file_or_folder[0]):
+                instance_file = [reader.GetGDCMSeriesFileNames(os.path.join(instance_file_or_folder[0], file))]
+                for folder in instance_file_or_folder[1:]:
+                    if os.path.exists(os.path.join(folder, file)):
+                        instance_file.append(reader.GetGDCMSeriesFileNames(os.path.join(folder, file)))
+                    else:
+                        raise FileNotFoundError('File not found %s' % (os.path.join(folder, file)))
+                instances.append(tuple(instance_file))
         else:
-            instances = _find_base(os.path.dirname(instance_file_or_folder), instances)
+            instance_file = []
+            for file in instance_file_or_folder:
+                instance_file.append(reader.GetGDCMSeriesFileNames(file))
+            instances.append(tuple(instance_file))
+
     return instances

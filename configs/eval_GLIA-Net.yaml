@@ -3,7 +3,7 @@ logging_folder: logs
 ckpt_folder: ckpt
 summary_folder: summary
 load_best_model: False  # if false, load last. else load best checkpoint
-ckpt_file: checkpoint-0245700.pt  # ckpt file name to load. set null to load the latest ckpt
+ckpt_file: checkpoint-0245701.pt  # ckpt file name to load. set null to load the latest ckpt
 log_every_n_iters: 10  # every n iters log to logger
 
 # will be sent to model as kwargs
@@ -13,7 +13,7 @@ model:
   with_global: True  # whether use global positioning network
   global_type: attention_map
   global_out_channels: 2
-  in_channels: 3
+  in_channels: 2
   out_channels: 2
   num_classes: 2  # usually same to out_channels
   f_maps: [16, 32, 64, 128]
@@ -21,9 +21,11 @@ model:
 
 data:
   features:
-    cta_img_file: image
+    tof_img_file: image
+    struct_img_file: image
   labels:
     aneurysm_seg_file: mask
+  normalization: z_norm
   hu_values: [[0, 100], [100, 200], [200, 800]]  # HU value intervals  for input images. Length should be same as in_channels
   data_root:  # path to the dataset and can be different for windows and linux
     windows: medical_data\

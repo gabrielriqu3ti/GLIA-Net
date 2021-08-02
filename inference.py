@@ -13,7 +13,7 @@ parser.add_argument('-n', '--exp_id', type=int, required=False, default=1,
 parser.add_argument('-d', '--device', type=str, required=False, default='0',
                     help='device id for cuda and \'cpu\' for cpu. can be multiple devices split by \',\'.')
 parser.add_argument('-i', '--input_file_or_folder', type=str, required=True,
-                    help='input file or folder to be the input image(s)')
+                    help='input files separated by , or folder to the input image(s)')
 parser.add_argument('-t', '--input_type', choices=['nii', 'dcm'], default='nii', required=False,
                     help='nii or dicom file type')
 parser.add_argument('-o', '--output_folder', type=str, default=None, required=False,
@@ -52,7 +52,7 @@ if __name__ == '__main__':
     logger.info('use device %s' % args.device)
 
     try:
-        inference(config, exp_path, logger, devices, args.input_file_or_folder, args.input_type, args.output_folder,
+        inference(config, exp_path, logger, devices, tuple(args.input_file_or_folder.split(',')), args.input_type, args.output_folder,
                   args.save_binary, args.save_prob, args.save_global)
     except Exception as e:
         logger.exception(e)

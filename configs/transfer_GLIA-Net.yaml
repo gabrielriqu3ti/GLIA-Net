@@ -1,0 +1,52 @@
+task: AneurysmSeg
+logging_folder: logs
+ckpt_folder: ckpt
+summary_folder: summary
+load_best_model: False  # if false, load last. else load best checkpoint
+ckpt_file: checkpoint-0245700.pt  # ckpt file name to load. set null to load the latest ckpt
+new_ckpt_file: checkpoint-0245701.pt  # ckpt file name to save
+
+# will be sent to model as kwargs
+model:
+  filename: GLIA-Net
+  classname: GLIANet
+  with_global: True  # whether use global positioning network
+  global_type: attention_map
+  global_out_channels: 2
+  in_channels: 3
+  new_in_channels: 2
+  out_channels: 2
+  new_out_channels: 2
+  num_classes: 2  # usually same to out_channels
+  f_maps: [16, 32, 64, 128]
+  norm_type: gn  # bn (batch norm), in (instance norm), gn (group norm) or sn (switchable norm)
+
+data:
+  features:
+    tof_img_file: image
+    struct_img_file: image
+  normalization: z_norm
+  img_spacing: null  # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
+  patch_size: [96, 96, 96]  # depth, width, height
+  overlap_step: [48, 48, 48]  # in sliding window data generating method
+  num_proc_workers: 3  # number of data pre-processing workers/processes. set 0 to disable multi-processing.
+
+train:
+  batch_size: 2  # for each device/gpu
+  losses: # first loss is the main loss. this dict will be sent to LossWrapper as kwargs
+    - name: ExpLoss   # local segmentation loss
+      final_activation: softmax
+    - name: SoftmaxCrossEntropyLoss   # global positioning loss
+      final_activation: softmax
+
+optimizer:
+  # supported optimizers: https://pytorch.org/docs/stable/optim.html
+  name: Adam
+  kwargs:
+    lr: 0.0002
+    weight_decay: 0.001
+
+eval:
+  phase: inference  # phase tag to identify different inference runs
+  probability_threshold: 0.5  # to generate label mask from probability map
+

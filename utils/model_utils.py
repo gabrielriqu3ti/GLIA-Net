@@ -84,7 +84,7 @@ class CheckpointLogger:
             self.logger.info(f"Latest checkpoint saved to '{latest_ckpt_file}'")
             self.has_saved += 1
 
-    def load_ckeckpoint(self, model, ckpt_file=None, is_best=False, optimizer=None):
+    def load_checkpoint(self, model, ckpt_file=None, is_best=False, optimizer=None):
         if ckpt_file is None:
             if is_best:
                 ckpt_file = self.get_best_ckpt_file()
@@ -108,6 +108,10 @@ class CheckpointLogger:
 def create_optimizer(config, model):
     if 'optimizer' not in config:
         return None
+    # model_params_list = list(model.parameters())
+    # print("model_params_list with length ", len(model_params_list))
+    # for i, model_params_i in enumerate(model_params_list):
+    #     print(f"model_params_list[{i}] with shape", model_params_i.shape)
     optimizer_config = config['optimizer']
     optimizer_cls = getattr(torch.optim, optimizer_config['name'])
     optimizer = optimizer_cls(model.parameters(), **optimizer_config['kwargs'])

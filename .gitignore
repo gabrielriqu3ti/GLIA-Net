@@ -1,0 +1,7 @@
+*__pycache__*
+*.idea*
+medical_data/*.csv
+medical_data/ane_seg*
+medical_data/*img*
+medical_data/*imag*
+freeze_example.py

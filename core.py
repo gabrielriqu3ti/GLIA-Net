@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 
@@ -44,7 +45,7 @@ class _ModelCore:
         self.logger.debug(self.model)
         self.optimizer = None  # create in sub-classes
         if len(devices) > 1:
-            self.model = torch.nn.DataParallel(self.model, device_ids=devices, output_device=devices[0])
+            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=devices, output_device=devices[0])
         self.model.to(devices[0])
         self.writer = SummaryWriter(log_dir=self.summary_dir)
         if 'visualization' in config:
@@ -60,9 +61,9 @@ class _ModelCore:
     def _wrap_inputs(self, inputs):
         if self.config['task'] == 'AneurysmSeg':
             if self.config['model']['with_global']:
-                return inputs['local_cta_input'], inputs['global_cta_input'], inputs['global_patch_location_bbox']
+                return inputs['local_exam_input'], inputs['global_exam_input'], inputs['global_patch_location_bbox']
             else:
-                return inputs['local_cta_input']
+                return inputs['local_exam_input']
         else:
             self.logger.critical('Cannot recognize task: %s' % self.config['task'])
             exit(1)
@@ -104,9 +105,8 @@ class _ModelCore:
             model_targets = OrderedDict()  # the first is main
             model_weights = OrderedDict()  # the first is main
         raw_inputs = OrderedDict()  # for visualization
-        hu_intervals = self.config['data']['hu_values']
 
-        def _normalize(image):
+        def _hu_normalize(image):
             normalized_img = []
             for hu_inter in hu_intervals:
                 hu_channel = torch.clamp(image, hu_inter[0], hu_inter[1])
@@ -115,9 +115,60 @@ class _ModelCore:
             normalized_img = torch.stack(normalized_img, dim=1)
             return normalized_img
 
+        def _z_normalize(image):
+            if isinstance(image, list) or isinstance(image, tuple):
+                image_list = image
+            else:
+                image_list = [image]
+            normalized_img = []
+            for img in image_list:
+                norm_img = img - torch.mean(img)
+                norm_img = norm_img / torch.std(img)
+                normalized_img.append(norm_img)
+            normalized_img = torch.stack(normalized_img, dim=1)
+            return normalized_img
+
+        def _pct90_normalize(image):
+            if isinstance(image, list) or isinstance(image, tuple):
+                image_list = image
+            else:
+                image_list = [image]
+            normalized_img = []
+            for img in image_list:
+                norm_img = img - torch.quantile(img, 0.05)
+                norm_img = norm_img / (torch.quantile(img, 0.95) - torch.quantile(img, 0.05))
+                normalized_img.append(norm_img)
+            normalized_img = torch.stack(normalized_img, dim=1)
+            return normalized_img
+
+        # These are the available normalization options:
+        norm_dict = {'hu_norm': _hu_normalize,
+                     'z_norm': _z_normalize,
+                     'pct90_norm': _pct90_normalize
+                     }
+        normalization = self.config['data'].get('normalization', '')
+        if normalization not in norm_dict:
+            self.logger.critical('Normalization not available %s' % normalization)
+            exit(1)
+        elif normalization == 'hu_norm':
+            hu_intervals = self.config['data']['hu_values']
+        else:
+            img_file_list = ['tof_img', 'struct_img']
+
         if self.config['task'] == 'AneurysmSeg':
-            model_inputs['local_cta_input'] = _normalize(inputs['cta_img']).type(torch.float32)
-            raw_inputs['local_cta_input'] = torch.unsqueeze(inputs['cta_img'].type(torch.float32), 1)
+            if normalization == 'hu_norm':
+                model_inputs['local_exam_input'] = _hu_normalize(inputs['cta_img']).type(torch.float32)
+                raw_inputs['local_cta_input'] = torch.unsqueeze(inputs['cta_img'].type(torch.float32), 1)
+            else:
+                input_list = []
+                for img_file in img_file_list:
+                    if img_file in inputs:
+                        input_list.append(inputs[img_file])
+                model_inputs['local_exam_input'] = norm_dict[normalization](input_list).type(torch.float32)
+                for img_file in img_file_list:
+                    if img_file in inputs:
+                        raw_inputs['local_' + img_file.replace('img', 'input')] = \
+                            torch.unsqueeze(inputs[img_file].type(torch.float32), 1)
             if targets is not None:
                 model_targets['local_ane_seg_target'] = targets['aneurysm_seg'].type(torch.int64)
                 local_weight_config = self.config['train']['losses'][0]['weight']
@@ -129,8 +180,21 @@ class _ModelCore:
                     model_weights['local_ane_seg_target_weight'] = None
             # with global positioning network
             if self.config['model'].get('with_global', False):
-                model_inputs['global_cta_input'] = _normalize(inputs['global_cta_img']).type(torch.float32)
-                raw_inputs['global_cta_input'] = torch.unsqueeze(inputs['global_cta_img'].type(torch.float32), 1)
+                if normalization == 'hu_norm':
+                    model_inputs['global_exam_input'] = _hu_normalize(inputs['global_cta_img']).type(torch.float32)
+                    raw_inputs['global_cta_input'] = torch.unsqueeze(inputs['global_cta_img'].type(torch.float32), 1)
+                else:
+                    input_list = []
+                    for img_file in img_file_list:
+                        if img_file in inputs:
+                            input_list.append(inputs['global_' + img_file])
+                    model_inputs['global_exam_input'] = norm_dict[normalization](input_list).type(
+                        torch.float32)
+                    for img_file in img_file_list:
+                        if img_file in inputs:
+                            raw_inputs['global_' + img_file.replace('img', 'input')] = \
+                                torch.unsqueeze(inputs[img_file].type(torch.float32), 1)
+
                 model_inputs['global_patch_location_bbox'] = inputs['global_patch_location_bbox'].type(torch.float32)
                 raw_inputs['global_patch_location_bbox'] = inputs['global_patch_location_bbox'].type(torch.float32)
                 if targets is not None:
@@ -190,7 +254,7 @@ class _ModelCore:
             return outputs, losses
 
     def _save_checkpoint(self, is_best, epoch_finished=False):
-        if isinstance(self.model, torch.nn.DataParallel):
+        if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
             model_state_dict = self.model.module.state_dict()
         else:
             model_state_dict = self.model.state_dict()
@@ -208,14 +272,14 @@ class _ModelCore:
 
     def _load_checkpoint(self, ckpt_file=None, is_best=False):
         if self.checkpoint_logger.is_ckpt_exist(self.load_best):
-            if isinstance(self.model, torch.nn.DataParallel):
+            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
                 model = self.model.module
             else:
                 model = self.model
             if ckpt_file is None:
-                state = self.checkpoint_logger.load_ckeckpoint(model, is_best=is_best, optimizer=self.optimizer)
+                state = self.checkpoint_logger.load_checkpoint(model, is_best=is_best, optimizer=self.optimizer)
             else:
-                state = self.checkpoint_logger.load_ckeckpoint(model, ckpt_file=ckpt_file, optimizer=self.optimizer)
+                state = self.checkpoint_logger.load_checkpoint(model, ckpt_file=ckpt_file, optimizer=self.optimizer)
             if state['epoch_finished']:
                 self.num_epoch = state['num_epoch'] + 1
             else:
@@ -280,6 +344,7 @@ class _ModelCore:
     def _log_images(self, phase, inputs=OrderedDict(), targets=OrderedDict(), outputs=OrderedDict(), weights=None,
                     metas=None,
                     summary_steps=None):
+        normalization = self.config['data'].get('normalization', '')
         if len(inputs) == 0 and len(targets) == 0 and len(outputs) == 0:
             self.logger.warning('no imgs to log because inputs, targets and outputs are all None')
         # general preprocess
@@ -287,11 +352,15 @@ class _ModelCore:
             summary_steps = self.num_iterations
         for k in inputs.keys():
             inputs[k] = inputs[k].detach().cpu().numpy().astype(np.float32)  # tensor to ndarray
-            if 'mask' not in k and 'bbox' not in k:  # normalize cta image to 0-1
-                hu_low = self.config['data']['hu_values'][0][0]
-                hu_high = self.config['data']['hu_values'][-1][1]
-                inputs[k] = np.clip(inputs[k], hu_low, hu_high)
-                inputs[k] = (inputs[k] - hu_low) / (hu_high - hu_low)
+            if 'mask' not in k and 'bbox' not in k:
+                if normalization == 'hu_norm': # normalize cta image to 0-1
+                    hu_low = self.config['data']['hu_values'][0][0]
+                    hu_high = self.config['data']['hu_values'][-1][1]
+                    inputs[k] = np.clip(inputs[k], hu_low, hu_high)
+                    inputs[k] = (inputs[k] - hu_low) / (hu_high - hu_low)
+                else: # normalize other images to 0-1
+                    inputs[k] = inputs[k] - np.min(inputs[k])
+                    inputs[k] = inputs[k] / np.max(inputs[k])
             if inputs[k].ndim == 4:
                 inputs[k] = np.expand_dims(inputs[k], 1)
         for k in outputs.keys():
@@ -317,14 +386,34 @@ class _ModelCore:
                 if outputs[k].shape[1] == 2:
                     outputs[k] = outputs[k][:, 1:2, ...]  # 2 classes softmax output
             if 'global_output' in outputs:
+                global_input_pattern = r"global_[A-Za-z]+_input"
+                global_input_prog = re.compile(global_input_pattern)
+                global_input_key = ''
+                for input_key in inputs.keys():
+                    match = global_input_prog.match(input_key)
+                    if match is not None:
+                        global_input_key = match[0]
+                        break
+                if global_input_key == '':
+                    raise KeyError("%s not found in 'inputs'" % global_input_key)
                 text_images = np.stack([get_text_image(text='%1.4f' % outputs['global_output'][i][0],
-                                                       image_h=inputs['global_cta_input'].shape[3],
-                                                       image_w=inputs['global_cta_input'].shape[4])
+                                                   image_h=inputs[global_input_key].shape[3],
+                                                   image_w=inputs[global_input_key].shape[4])
                                         for i in range(len(outputs['global_output']))])
                 text_images = np.transpose(np.expand_dims(text_images, 1), (0, 4, 1, 2, 3))
-                text_images = np.tile(text_images, (1, 1, inputs['global_cta_input'].shape[2], 1, 1))
+                text_images = np.tile(text_images, (1, 1, inputs[global_input_key].shape[2], 1, 1))
                 outputs['global_output'] = text_images
             if 'global_ane_cls_target' in targets:
+                global_input_pattern = r"global_[A-Za-z]+_input"
+                global_input_prog = re.compile(global_input_pattern)
+                global_input_key = ''
+                for input_key in inputs.keys():
+                    match = global_input_prog.match(input_key)
+                    if match is not None:
+                        global_input_key = match[0]
+                        break
+                if global_input_key == '':
+                    raise KeyError("%s not found in 'inputs'" % global_input_key)
                 texts = ['' for _ in range(self.batch_size)]
                 if 'id' in metas:
                     texts = [texts[i] + metas['id'][i] + '\n' for i in range(self.batch_size)]
@@ -332,22 +421,36 @@ class _ModelCore:
                     texts = [texts[i] + metas['hospital'][i] + '\n' for i in range(self.batch_size)]
                 texts = [texts[i] + '%1.4f' % targets['global_ane_cls_target'][i] for i in range(self.batch_size)]
                 text_images = np.stack([get_text_image(text=texts[i],
-                                                       image_h=inputs['global_cta_input'].shape[3],
-                                                       image_w=inputs['global_cta_input'].shape[4])
+                                                       image_h=inputs[global_input_key].shape[3],
+                                                       image_w=inputs[global_input_key].shape[4])
                                         for i in range(self.batch_size)])
                 text_images = np.transpose(np.expand_dims(text_images, 1), (0, 4, 1, 2, 3))
-                text_images = np.tile(text_images, (1, 1, inputs['global_cta_input'].shape[2], 1, 1))
+                text_images = np.tile(text_images, (1, 1, inputs[global_input_key].shape[2], 1, 1))
                 targets['global_ane_cls_target'] = text_images
             if 'global_patch_location_bbox' in inputs:
-                # expand to RGB
-                inputs['global_cta_input'] = np.tile(inputs['global_cta_input'], (1, 3, 1, 1, 1))
+                global_input_pattern = r"global_[A-Za-z]+_input"
+                global_input_prog = re.compile(global_input_pattern)
+                global_input_key = ''
+                for input_key in inputs.keys():
+                    match = global_input_prog.match(input_key)
+                    if match is not None:
+                        # expand to RGB
+                        inputs[match[0]] = np.tile(inputs[match[0]], (1, 3, 1, 1, 1))
+                        # find match
+                        global_input_key = match[0]
+                if global_input_key == '':
+                    raise KeyError("%s not found in 'inputs'" % global_input_key)
                 # patch_location_mask to red
                 global_path_location_mask = np.expand_dims(bbox2binary_mask(inputs['global_patch_location_bbox'],
-                                                                            inputs['global_cta_input'].shape[2:]), 1)
+                                                                            inputs[global_input_key].shape[2:]), 1)
 
                 alpha = 0.3 * global_path_location_mask[:, 0]
-                inputs['global_cta_input'][:, 0] = inputs['global_cta_input'][:, 0] * (1 - alpha) + \
-                                                   global_path_location_mask[:, 0] * alpha
+
+                for input_key in inputs.keys():
+                    match = global_input_prog.match(input_key)
+                    if match is not None:
+                        inputs[match[0]][:, 0] = inputs[match[0]][:, 0] * (1 - alpha) + \
+                                                           global_path_location_mask[:, 0] * alpha
                 inputs.pop('global_patch_location_bbox')
             if 'local_ane_seg_target_weight' in weights:
                 if weights['local_ane_seg_target_weight'] is None:
@@ -413,13 +516,14 @@ class Trainer(_ModelCore):
 
         self.has_log_graph = False
         self.skip_eval_metric_in_training = config['eval'].get('skip_eval_metric_in_training', False)
-        self.optimizer = create_optimizer(config, self.model)
-        self.lr_scheduler = create_lr_scheduler(config, self.optimizer)
 
         if config.get('ckpt_file', None) is None:
             self._load_checkpoint(is_best=self.load_best)
         else:
             self._load_checkpoint(ckpt_file=config['ckpt_file'])
+
+        self.optimizer = create_optimizer(config, self.model)
+        self.lr_scheduler = create_lr_scheduler(config, self.optimizer)
 
     def train(self):
         for _ in range(self.num_epoch, self.max_num_epochs + 1):
@@ -463,10 +567,16 @@ class Trainer(_ModelCore):
 
             raw_outputs = self._wrap_outputs(self.model(self._wrap_inputs(inputs)))
             outputs, losses = self._compute_loss_and_output(raw_outputs, targets, weights)
+            # print("raw_outputs['local_output'].shape:", raw_outputs['local_output'].shape)
+            # print("raw_outputs['global_output'].shape:", raw_outputs['global_output'].shape)
 
             main_output = list(outputs.values())[0]
             main_target = list(targets.values())[0]
             main_loss = list(losses.values())[0]
+
+            # print("list(outputs.keys()):", list(outputs.keys()))
+            # print("list(targets.keys()):", list(targets.keys()))
+            # print("list(losses.keys()):", list(losses.keys()))
 
             # update avg_losses
             if avg_losses is None:
@@ -675,9 +785,10 @@ class Inferencer(_ModelCore):
         if input_type not in ['nii', 'dcm']:
             self.logger.critical('input_type must be nii or dcm')
             exit(1)
-        if not os.path.exists(inference_file_or_folder):
-            self.logger.critical('inference_file_or_folder %s does not exist.' % inference_file_or_folder)
-            exit(1)
+        for file_or_folder in inference_file_or_folder:
+            if not os.path.exists(file_or_folder):
+                self.logger.critical('inference_file_or_folder %s does not exist.' % file_or_folder)
+                exit(1)
 
         self.inference_file_or_folder = inference_file_or_folder
         self.output_folder = output_folder
@@ -704,18 +815,19 @@ class Inferencer(_ModelCore):
         instances = get_instances_from_file_or_folder(self.inference_file_or_folder, instance_type=self.input_type)
 
         for i, instance in enumerate(instances):
+            print(instance)
             if self.output_folder is None:
                 if self.input_type == 'nii':
-                    output_file = instance.replace('.nii.gz', '_pred.nii.gz')
+                    output_file = instance[0].replace('.nii.gz', '_pred.nii.gz')
                 elif self.input_type == 'dcm':
-                    output_file = os.path.join(os.path.dirname(instance[0]), 'prediction.nii.gz')
+                    output_file = os.path.join(os.path.dirname(instance[0][0]), 'prediction.nii.gz')
             else:
                 assert not instance[0].startswith(self.output_folder)  # in case override original
                 if self.input_type == 'nii':
-                    output_file = os.path.join(self.output_folder, os.path.basename(instance))
+                    output_file = os.path.join(self.output_folder, os.path.basename(instance[0]))
                 elif self.input_type == 'dcm':
                     output_file = os.path.join(self.output_folder,
-                                               os.path.basename(os.path.dirname(instance[0])) + '.nii.gz')
+                                               os.path.basename(os.path.dirname(instance[0][0])) + '.nii.gz')
             self.inference_instance(instance, output_file)
             self.logger.info('finish %d in %d instances' % (i + 1, len(instances)))
 
@@ -733,10 +845,7 @@ class Inferencer(_ModelCore):
         if self.save_global:
             global_map = np.zeros(prediction_instance_shape.tolist(), dtype=np.float32)
 
-        if isinstance(input_file_s, list) or isinstance(input_file_s, tuple):
-            input_instance = os.path.dirname(input_file_s[0])
-        else:
-            input_instance = input_file_s
+        input_instance = os.path.basename(input_file_s[0])
 
         preprocess_time = time.time() - instance_start_time
 
@@ -815,3 +924,56 @@ class Inferencer(_ModelCore):
                                input_instance, output_file)
             print(logging_info)
             return prediction
+
+
+class Transfer(_ModelCore):
+    def __init__(self,
+                 config,
+                 exp_path,
+                 devices,
+                 logger=logging.getLogger('Transfer')):
+        super(Transfer, self).__init__(config, exp_path, devices, logger=logger)
+
+        self.optimizer = create_optimizer(config, self.model)
+
+        if config.get('ckpt_file', None) is None:
+            self._load_checkpoint(is_best=self.load_best)
+        else:
+            self._load_checkpoint(ckpt_file=config['ckpt_file'])
+
+    def adapt_model(self):
+        if self.config['model']['classname'] == 'GLIANet':
+            new_input_channels = self.config['model']['new_in_channels']
+
+            local_output_channels = self.model.encoder_blocks[0].residual_block1.res_conv.out_channels
+            self.model.encoder_blocks[0].residual_block1.conv1 = torch.nn.Conv3d(
+                new_input_channels, local_output_channels // 2, 1, padding=0, bias=False)
+
+            self.model.encoder_blocks[0].residual_block1.res_conv = torch.nn.Conv3d(
+                new_input_channels, local_output_channels, 1, padding=0, bias=False)
+
+            global_output_channels = self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.out_channels
+            self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1 = torch.nn.Conv3d(
+                new_input_channels, global_output_channels // 2, 1, padding=0, bias=False)
+
+            self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv = torch.nn.Conv3d(
+                new_input_channels, global_output_channels, 1, padding=0, bias=False)
+        else:
+            raise ValueError('Unrecognized classname %s' % self.config['model']['classname'])
+
+    def save_checkpoint(self, is_best=False, epoch_finished=False):
+        if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+            model_state_dict = self.model.module.state_dict()
+        else:
+            model_state_dict = self.model.state_dict()
+        state_dict = {
+            'num_epoch': self.num_epoch,
+            'epoch_finished': epoch_finished,
+            'num_iteration': self.num_iterations,
+            'model_state_dict': model_state_dict,
+        }
+        if self.best_eval_score is not None:
+            state_dict['best_eval_score'] = self.best_eval_score
+        if self.optimizer is not None:
+            state_dict['optimizer_state_dict'] = self.optimizer.state_dict()
+        self.checkpoint_logger.save_checkpoint(state_dict, is_best)

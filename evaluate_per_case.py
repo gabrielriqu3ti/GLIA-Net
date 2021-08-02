@@ -43,9 +43,9 @@ def study_evaluate(config, gt_file_or_folder, pred_file_or_folder, logger, devic
         drop_phrase = '_prob'
         require_phrase = None
     logger.info('Begin to scan gt_folder_or_file %s...' % gt_file_or_folder)
-    gt_instances = sorted(get_instances_from_file_or_folder(gt_file_or_folder, 'nii', drop_phrase='_pred'))
+    gt_instances = sorted(get_instances_from_file_or_folder((gt_file_or_folder,), 'nii', drop_phrase='_pred'))
     logger.info('Begin to scan pred_folder_or_file %s...' % pred_file_or_folder)
-    pred_instances = sorted(get_instances_from_file_or_folder(pred_file_or_folder, 'nii', drop_phrase, require_phrase))
+    pred_instances = sorted(get_instances_from_file_or_folder((pred_file_or_folder,), 'nii', drop_phrase, require_phrase))
 
     if len(gt_instances) != len(pred_instances):
         logger.critical('numbers of gt_instances and pred_instances do not match: %d, %d'
@@ -60,6 +60,9 @@ def study_evaluate(config, gt_file_or_folder, pred_file_or_folder, logger, devic
 
     reader = sitk.ImageFileReader()
     for i, (gt_ins, pred_ins) in enumerate(zip(gt_instances, pred_instances)):
+        if len(gt_ins) == 0 or len(pred_ins) == 0:
+            continue
+        gt_ins, pred_ins = gt_ins[0], pred_ins[0]
         ins_id = os.path.basename(gt_ins).split('.')[0]
         reader.SetFileName(gt_ins)
         gt_img = reader.Execute()

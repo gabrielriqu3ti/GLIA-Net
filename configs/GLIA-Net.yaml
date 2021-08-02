@@ -13,7 +13,7 @@ model:
   with_global: True  # whether use global positioning network
   global_type: attention_map
   global_out_channels: 2
-  in_channels: 3
+  in_channels: 2
   out_channels: 2
   num_classes: 2  # usually same to out_channels
   f_maps: [16, 32, 64, 128]
@@ -21,9 +21,11 @@ model:
 
 data:
   features:
-    cta_img_file: image
+    tof_img_file: image
+    struct_img_file: image
   labels:
     aneurysm_seg_file: mask
+  normalization: z_norm
   hu_values: [[0, 100], [100, 200], [200, 800]]  # HU value intervals  for input images. Length should be same as in_channels
   data_root: # path to the dataset and can be different for windows and linux
     windows: medical_data\
