@@ -4,4 +4,5 @@ medical_data/*.csv
 medical_data/ane_seg*
 medical_data/*img*
 medical_data/*imag*
+exp
 freeze_example.py
