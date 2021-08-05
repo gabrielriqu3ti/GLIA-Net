@@ -128,6 +128,19 @@ class _ModelCore:
             normalized_img = torch.stack(normalized_img, dim=1)
             return normalized_img
 
+        def _minmax_normalize(image):
+            if isinstance(image, list) or isinstance(image, tuple):
+                image_list = image
+            else:
+                image_list = [image]
+            normalized_img = []
+            for img in image_list:
+                norm_img = img - torch.min(img)
+                norm_img = norm_img / (torch.max(img) - torch.min(img))
+                normalized_img.append(norm_img)
+            normalized_img = torch.stack(normalized_img, dim=1)
+            return normalized_img
+
         def _pct90_normalize(image):
             if isinstance(image, list) or isinstance(image, tuple):
                 image_list = image
@@ -144,6 +157,7 @@ class _ModelCore:
         # These are the available normalization options:
         norm_dict = {'hu_norm': _hu_normalize,
                      'z_norm': _z_normalize,
+                     'minmax_norm': _minmax_normalize,
                      'pct90_norm': _pct90_normalize
                      }
         normalization = self.config['data'].get('normalization', '')
