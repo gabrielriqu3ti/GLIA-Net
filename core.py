@@ -353,12 +353,12 @@ class _ModelCore:
         for k in inputs.keys():
             inputs[k] = inputs[k].detach().cpu().numpy().astype(np.float32)  # tensor to ndarray
             if 'mask' not in k and 'bbox' not in k:
-                if normalization == 'hu_norm': # normalize cta image to 0-1
+                if normalization == 'hu_norm':  # normalize cta image to 0-1
                     hu_low = self.config['data']['hu_values'][0][0]
                     hu_high = self.config['data']['hu_values'][-1][1]
                     inputs[k] = np.clip(inputs[k], hu_low, hu_high)
                     inputs[k] = (inputs[k] - hu_low) / (hu_high - hu_low)
-                else: # normalize other images to 0-1
+                else:  # normalize other images to 0-1
                     inputs[k] = inputs[k] - np.min(inputs[k])
                     inputs[k] = inputs[k] / np.max(inputs[k])
             if inputs[k].ndim == 4:
@@ -504,6 +504,7 @@ class Trainer(_ModelCore):
         self.log_summary_every_n_iters = config['train'].get('log_summary_every_n_iters', 1)
         self.save_ckpt_every_n_iters = config['train'].get('save_ckpt_every_n_iters', 10)
         self.eval_score_higher_is_better = config['eval'].get('eval_score_higher_is_better', True)
+        self.unfrozen_layers = config['train'].get('unfrozen_layers', 'all')
 
         self.loss_fns = get_loss_fns(config, device=devices[0], logger=logger)
         # the first will be used as main eval metric
@@ -522,8 +523,62 @@ class Trainer(_ModelCore):
         else:
             self._load_checkpoint(ckpt_file=config['ckpt_file'])
 
+        self.freeze_layers()
+
         self.optimizer = create_optimizer(config, self.model)
         self.lr_scheduler = create_lr_scheduler(config, self.optimizer)
+
+    def freeze_layers(self):
+        if self.unfrozen_layers == 'all':
+            self.logger.info('All layers are trainable')
+        elif self.unfrozen_layers == 'first':
+            if self.config['model']['classname'] == 'GLIANet':
+                self.logger.info('Only the first layers are trainable')
+                for params in self.model.parameters():
+                    params.requires_grad = False
+                for params in self.model.encoder_blocks[0].residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.encoder_blocks[0].residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.unfrozen_layers == 'last':
+            if self.config['model']['classname'] == 'GLIANet':
+                self.logger.info('Only the last layers are trainable')
+                for params in self.model.parameters():
+                    params.requires_grad = False
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the last ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.unfrozen_layers == 'first_and_last':
+            if self.config['model']['classname'] == 'GLIANet':
+                self.logger.info('Only the first and last layers are trainable')
+                for params in self.model.parameters():
+                    params.requires_grad = False
+                for params in self.model.encoder_blocks[0].residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.encoder_blocks[0].residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the first and last ones is not supported for "
+                                 "model %s" % self.config['model']['classname'])
+        else:
+            self.unfrozen_layers = 'all'
+            self.logger.info('Warning: unsupported unfrozen layer %s. All layers are trainable' %
+                             self.unfrozen_layers)
 
     def train(self):
         for _ in range(self.num_epoch, self.max_num_epochs + 1):

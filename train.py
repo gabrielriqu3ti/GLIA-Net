@@ -50,15 +50,7 @@ def train(config, exp_path, logger, devices):
         eval_loader = None
 
     trainer = Trainer(config, exp_path, devices, train_loader, eval_loader, logger=logger)
-    # state = trainer.optimizer.state_dict()
-    # print('state keys:', state.keys())
-    # print('state["state"] keys:', state['state'].keys())
-    # print('state')
-    # for k, v in state['state'].items():
-    #     print(f'state[{k}]["exp_avg"]', '--->', v['exp_avg'].shape)
-    print("trainer.num_epoch =", trainer.num_epoch)
     trainer.train()
-    print("trainer.num_epoch =", trainer.num_epoch)
 
 
 if __name__ == '__main__':

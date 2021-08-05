@@ -114,7 +114,7 @@ def create_optimizer(config, model):
     #     print(f"model_params_list[{i}] with shape", model_params_i.shape)
     optimizer_config = config['optimizer']
     optimizer_cls = getattr(torch.optim, optimizer_config['name'])
-    optimizer = optimizer_cls(model.parameters(), **optimizer_config['kwargs'])
+    optimizer = optimizer_cls(filter(lambda p: p.requires_grad, model.parameters()), **optimizer_config['kwargs'])
     return optimizer
 
 

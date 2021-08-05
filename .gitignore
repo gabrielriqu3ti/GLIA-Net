@@ -6,3 +6,4 @@ medical_data/*img*
 medical_data/*imag*
 exp
 freeze_example.py
+analyze_performance.py
