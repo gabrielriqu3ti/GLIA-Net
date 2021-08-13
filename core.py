@@ -141,15 +141,15 @@ class _ModelCore:
             normalized_img = torch.stack(normalized_img, dim=1)
             return normalized_img
 
-        def _pct90_normalize(image):
+        def _pct_normalize(image, pct_range=0.9):
             if isinstance(image, list) or isinstance(image, tuple):
                 image_list = image
             else:
                 image_list = [image]
             normalized_img = []
             for img in image_list:
-                norm_img = img - torch.quantile(img, 0.05)
-                norm_img = norm_img / (torch.quantile(img, 0.95) - torch.quantile(img, 0.05))
+                norm_img = img - torch.quantile(img, (1 - pct_range) / 2)
+                norm_img = norm_img / (torch.quantile(img, (1 + pct_range) / 2) - torch.quantile(img, (1 - pct_range) / 2))
                 normalized_img.append(norm_img)
             normalized_img = torch.stack(normalized_img, dim=1)
             return normalized_img
@@ -158,7 +158,7 @@ class _ModelCore:
         norm_dict = {'hu_norm': _hu_normalize,
                      'z_norm': _z_normalize,
                      'minmax_norm': _minmax_normalize,
-                     'pct90_norm': _pct90_normalize
+                     'pct_norm': _pct_normalize
                      }
         normalization = self.config['data'].get('normalization', '')
         if normalization not in norm_dict:

@@ -7,3 +7,5 @@ medical_data/*imag*
 exp
 freeze_example.py
 analyze_performance.py
+drafts
+draft*.py

@@ -13,6 +13,7 @@ import numpy as np
 import skimage.measure as measure
 import torch.utils.data
 from skimage.transform import resize
+import scipy.ndimage
 from torch.multiprocessing import Queue, Value
 
 from utils.model_utils import binary_mask2bbox
@@ -441,16 +442,17 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
     img_files = [key for (key, value) in reading_file_fields.items() if value == 'image']
     data_glo = data['data']
     meta = {'id': data['id'], 'hospital': data['hospital'], 'spacing': data['data'][img_files[0]]['spacing']}
+
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
-    # print("np.unique(label_glo_img) =", np.unique(label_glo_img))
-    # print("label_glo_img.shape =", label_glo_img.shape)
     label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
-    # print("np.unique(label_glo_img) =", np.unique(label_glo_img))
+
     input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
         brain_mask_glo_img = data_glo['brain_mask_file']['data'].astype(np.int32)
+        enable_brain_mask_rot = True
     else:
         brain_mask_glo_img = np.ones(label_glo_img.shape, np.int32)
+        enable_brain_mask_rot = False
     patch_size = config['data']['patch_size']
     overlap_step = config['data']['overlap_step']
     with_global = config['model']['with_global']
@@ -479,19 +481,59 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
 
     def _gen_patch(_starts):
         _ends = [_starts[i] + patch_size[i] for i in range(3)]
-        patch_exam_img_list = []
-        for input_glo_img in input_glo_img_list:
-            patch_exam_img_list.append(input_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy())
-        patch_brain_mask_img = brain_mask_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
-        patch_label_img = label_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
+        _starts_ext = [max(start - 21, 0) for start in _starts]
+        _ends_ext = [min(end + 21, shape) for (end, shape) in zip(_ends, label_glo_img.shape)]
+        _starts_border = [max(21 - start, 0) for start in _starts]
+        _ends_border = [start_border + end_ext - start_ext for (start_border, start_ext, end_ext)
+                        in zip(_starts_border, _starts_ext, _ends_ext)]
+
+        if [end - start for (start, end) in zip(_starts_ext, _ends_ext)] != \
+                [end - start for (start, end) in zip(_starts_border, _ends_border)]:
+            logger.warning('Subject %s has different shapes between [_starts_ext:_ends_ext] and '
+                           '[_starts_border:_ends_border]' % data['id'])
+            print('shape          --->', label_glo_img.shape)
+            print('_starts        --->', _starts)
+            print('_ends          --->', _ends)
+            print('_starts_border --->', _starts_border)
+            print('_ends_border   --->', _ends_border)
+            print('_starts_ext    --->', _starts_ext)
+            print('_ends_ext      --->', _ends_ext)
+            return None
+
+        # Initialize patches with 0s and expanded size to allow rotation
+        patch_exam_ext_img_list = []
+        for _ in range(len(input_glo_img_list)):
+            patch_exam_ext_img_list.append(np.zeros((138, 138, 138), dtype=np.float32))
+        patch_brain_mask_ext_img = np.zeros((138, 138, 138), dtype=np.int32)
+        patch_label_ext_img = np.zeros((138, 138, 138), dtype=np.int32)
+
+        # Copy patch values from original images
+        for img_id in range(len(input_glo_img_list)):
+            patch_exam_ext_img_list[img_id][_starts_border[0]:_ends_border[0],
+                                            _starts_border[1]:_ends_border[1],
+                                            _starts_border[2]:_ends_border[2]] = \
+                input_glo_img_list[img_id][_starts_ext[0]:_ends_ext[0],
+                                           _starts_ext[1]:_ends_ext[1],
+                                           _starts_ext[2]:_ends_ext[2]].copy()
+        patch_brain_mask_ext_img[_starts_border[0]:_ends_border[0],
+                                 _starts_border[1]:_ends_border[1],
+                                 _starts_border[2]:_ends_border[2]] = brain_mask_glo_img[_starts_ext[0]:_ends_ext[0],
+                                                                                         _starts_ext[1]:_ends_ext[1],
+                                                                                         _starts_ext[2]:_ends_ext[2]].copy()
+        patch_label_ext_img[_starts_border[0]:_ends_border[0],
+                            _starts_border[1]:_ends_border[1],
+                            _starts_border[2]:_ends_border[2]] = label_glo_img[_starts_ext[0]:_ends_ext[0],
+                                                                               _starts_ext[1]:_ends_ext[1],
+                                                                               _starts_ext[2]:_ends_ext[2]].copy()
 
         match_patch_size = True
-        for patch_exam_img in patch_exam_img_list:
-            match_patch_size = match_patch_size and patch_exam_img.shape != patch_brain_mask_img.shape
-            match_patch_size = match_patch_size and patch_exam_img.shape != patch_label_img.shape
+        for patch_exam_ext_img in patch_exam_ext_img_list:
+            match_patch_size = match_patch_size and patch_exam_ext_img.shape != patch_brain_mask_ext_img.shape
+            match_patch_size = match_patch_size and patch_exam_ext_img.shape != patch_label_ext_img.shape
             if not match_size:
-                logger.warning('Different shapes for patch_exam_img, patch_brain_mask_img and patch_label_img: %s, %s, %s'
-                               % (patch_exam_img.shape, patch_brain_mask_img.shape, patch_label_img.shape))
+                logger.warning('Different shapes for patch_exam_ext_img, patch_brain_mask_ext_img and ' +
+                               'patch_label_ext_img: %s, %s, %s '
+                               % (patch_exam_ext_img.shape, patch_brain_mask_ext_img.shape, patch_label_ext_img.shape))
                 return None
 
         if with_global:
@@ -499,34 +541,76 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
             for cut_input_glo_img in cut_input_glo_img_list:
                 global_exam_img_list.append(cut_input_glo_img.copy())
             global_location_mask = global_localizer.get_position_map(_starts, _ends, [96, 96, 96])
-            global_label = np.array(1 if patch_label_img.sum() > 3 else 0)
-        if data_aug:
-            for patch_exam_img_id in range(len(patch_exam_img_list)):
-                patch_exam_img_list[patch_exam_img_id] += np.random.normal(0.0, 1.0,
-                                                                           patch_exam_img_list[patch_exam_img_id].shape)
-            all_arrays = [*patch_exam_img_list, patch_brain_mask_img, patch_label_img]
-            bundle = np.stack(all_arrays)
-            ran_1 = [np.random.rand() > 0.5 for _ in range(3)]
-            bundle = random_flip_all(bundle, ran_1)
+            global_label = np.array(1 if patch_label_ext_img.sum() > 3 else 0)
 
-            *patch_exam_img_list, patch_brain_mask_img, patch_label_img = np.split(bundle, bundle.shape[0])
-            for patch_exam_img_id in range(len(patch_exam_img_list)):
-                patch_exam_img_list[patch_exam_img_id] = np.squeeze(patch_exam_img_list[patch_exam_img_id].copy(), 0)
-            patch_brain_mask_img = np.squeeze(patch_brain_mask_img.copy(), 0)
-            patch_label_img = np.squeeze(patch_label_img.copy(), 0)
+        if data_aug:
+            # Generate random values
+            ran_flip = [np.random.rand() > 0.5 for _ in range(3)]
+            ran_rot = [np.random.rand() > 0.5 for _ in range(3)]
+            ran_rot_90 = [np.random.rand() > 0.5 for _ in range(3)]
+            ran_angle = [360 * np.random.rand() for _ in range(3)]
+
+            # Add Gaussian noise to patch inputs
+            for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):
+                patch_exam_ext_img_list[patch_exam_ext_img_id] += np.random.normal(0.0, 10.0,
+                                                                                   patch_exam_ext_img_list[patch_exam_ext_img_id].shape)
+
+            patch_bundle = np.stack(patch_exam_ext_img_list, 0)
+            patch_brain_mask_ext_img = np.expand_dims(patch_brain_mask_ext_img, 0)
+            patch_label_ext_img = np.expand_dims(patch_label_ext_img, 0)
+
+            # Add random flip to patches
+            patch_bundle = random_flip_all(patch_bundle, ran_flip)
+            if enable_brain_mask_rot:
+                patch_brain_mask_ext_img = random_flip_all(patch_brain_mask_ext_img, ran_flip)
+            patch_label_ext_img = random_flip_all(patch_label_ext_img, ran_flip)
+
+            # Add random rotation to patches
+            patch_bundle = random_rotate_all(patch_bundle, ran_angle, is_mask=False, do_it=ran_rot)
+            if enable_brain_mask_rot:
+                patch_brain_mask_ext_img = random_rotate_all(patch_brain_mask_ext_img, ran_angle, is_mask=True, do_it=ran_rot)
+            patch_label_ext_img = random_rotate_all(patch_label_ext_img, ran_angle, is_mask=True, do_it=ran_rot)
+
+            patch_bundle = random_rotate_90s_all(patch_bundle, ran_rot_90)
+            if enable_brain_mask_rot:
+                patch_brain_mask_ext_img = random_rotate_90s_all(patch_brain_mask_ext_img, ran_rot_90)
+            patch_label_ext_img = random_rotate_90s_all(patch_label_ext_img, ran_rot_90)
+
+            *patch_exam_ext_img_list, = np.split(patch_bundle, patch_bundle.shape[0])
+            for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):
+                patch_exam_ext_img_list[patch_exam_ext_img_id] = np.squeeze(patch_exam_ext_img_list[patch_exam_ext_img_id].copy(), 0)
+            patch_brain_mask_ext_img = np.squeeze(patch_brain_mask_ext_img.copy(), 0)
+            patch_label_ext_img = np.squeeze(patch_label_ext_img.copy(), 0)
 
             if with_global:
-                global_arrays = [*global_exam_img_list, global_location_mask]
-                global_bundle = np.stack(global_arrays)
-                global_bundle = random_flip_all(global_bundle, ran_1)
+                global_bundle = np.stack(global_exam_img_list, 0)
+                global_location_mask = np.expand_dims(global_location_mask, 0)
 
-                *global_exam_img_list, global_location_mask = np.split(global_bundle, global_bundle.shape[0])
+                # Add random flip to globals
+                global_bundle = random_flip_all(global_bundle, ran_flip)
+                global_location_mask = random_flip_all(global_location_mask, ran_flip)
+
+                # Add random rotation to globals
+                global_bundle = random_rotate_all(global_bundle, ran_angle, is_mask=False, do_it=ran_rot)
+                global_location_mask = random_rotate_all(global_location_mask, ran_angle, is_mask=True, do_it=ran_rot)
+
+                global_bundle = random_rotate_90s_all(global_bundle, ran_rot_90)
+                global_location_mask = random_rotate_90s_all(global_location_mask, ran_rot_90)
+
+                *global_exam_img_list, = np.split(global_bundle, global_bundle.shape[0])
                 for global_exam_img_id in range(len(global_exam_img_list)):
-                    global_exam_img_list[global_exam_img_id] = np.squeeze(global_exam_img_list[global_exam_img_id].copy(), 0)
+                    global_exam_img_list[global_exam_img_id] = np.squeeze(
+                        global_exam_img_list[global_exam_img_id].copy(), 0)
                 global_location_mask = np.squeeze(global_location_mask.copy(), 0)
 
         if with_global:
             global_location_bbox = binary_mask2bbox(global_location_mask)
+
+        patch_exam_img_list = []
+        for patch_exam_ext_img in patch_exam_ext_img_list:
+            patch_exam_img_list.append(patch_exam_ext_img[21:117, 21:117, 21:117].copy())
+        patch_brain_mask_img = patch_brain_mask_ext_img[21:117, 21:117, 21:117].copy()
+        patch_label_img = patch_label_ext_img[21:117, 21:117, 21:117].copy()
 
         inputs = dict()
         for input_id in range(len(img_files)):
@@ -757,10 +841,17 @@ def random_flip_all(img, do_it=(None, None, None)):
     return img
 
 
-def random_rotate_all(img, do_it=(None, None, None)):
-    img = random_rotate(img, 1, do_it[0])
-    img = random_rotate(img, 2, do_it[1])
-    img = random_rotate(img, 3, do_it[2])
+def random_rotate_all(img, angle=(None, None, None), is_mask=False, do_it=(None, None, None)):
+    img = random_rotate(img, 1, angle[0], is_mask, do_it[0])
+    img = random_rotate(img, 2, angle[1], is_mask, do_it[1])
+    img = random_rotate(img, 3, angle[2], is_mask, do_it[2])
+    return img
+
+
+def random_rotate_90s_all(img, do_it=(None, None, None)):
+    img = random_rotate_90s(img, 1, do_it[0])
+    img = random_rotate_90s(img, 2, do_it[1])
+    img = random_rotate_90s(img, 3, do_it[2])
     return img
 
 
@@ -781,7 +872,41 @@ def random_flip(img, dim, do_it=None):
     return out_img
 
 
-def random_rotate(img, dim, do_it=None):
+def random_rotate(img, dim, angle, is_mask=False, do_it=None):
+    assert len(img.shape) == 4  # c, d, w, h
+    assert dim in [1, 2, 3]
+
+    if is_mask:
+        order = 0
+    else:
+        order = 1
+
+    if angle is None:
+        angle = 360 * np.random.rand()
+
+    if dim == 1:
+        axes = (2, 3)
+    elif dim == 2:
+        axes = (1, 3)
+    else:
+        axes = (1, 2)
+
+    norm_img = img
+
+    if do_it is None:
+        if np.random.rand() > 0.5:
+            do_it = False
+        else:
+            do_it = True
+    if do_it:
+        out_img = scipy.ndimage.rotate(norm_img, angle, axes, reshape=False, order=order)
+    else:
+        out_img = norm_img
+
+    return out_img
+
+
+def random_rotate_90s(img, dim, do_it=None):
     assert len(img.shape) == 4  # c, d, w, h
     assert dim in [1, 2, 3]
 

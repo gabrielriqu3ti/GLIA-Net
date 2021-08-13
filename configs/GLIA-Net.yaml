@@ -45,9 +45,9 @@ data:
 
 train:
   manual_seed: null  # set seed for random initialization
-  num_epoch: 20  # 10  # number of training epoch
-  batch_size: 1  # for each device/gpu
-  unfrozen_layers: first # options are 'all', 'first', 'last' and 'first_and_last'
+  num_epoch: 3  # 10  # number of training epoch
+  batch_size: 2  # for each device/gpu
+  unfrozen_layers: all # options are 'all', 'first', 'last' and 'first_and_last'
   eval_every_n_epochs: 1  # train this many epochs and run one eval phase. set to 0 to disable eval phase in training
   log_summary_every_n_iters: 100  # log to summary folder
   save_ckpt_every_n_iters: 100  # save ckpt every this iterations
