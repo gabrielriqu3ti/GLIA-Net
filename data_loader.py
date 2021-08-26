@@ -544,11 +544,26 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
             global_label = np.array(1 if patch_label_ext_img.sum() > 3 else 0)
 
         if data_aug:
+            rotation_type = config['train']['data_aug'].get('rotation', 'full')
             # Generate random values
             ran_flip = [np.random.rand() > 0.5 for _ in range(3)]
-            ran_rot = [np.random.rand() > 0.5 for _ in range(3)]
-            ran_rot_90 = [np.random.rand() > 0.5 for _ in range(3)]
-            ran_angle = [360 * np.random.rand() for _ in range(3)]
+            if rotation_type == 'full':
+                ran_rot = [np.random.rand() > 0.5 for _ in range(3)]
+                ran_rot_90 = [np.random.rand() > 0.5 for _ in range(3)]
+                ran_angle = [360 * np.random.rand() for _ in range(3)]
+            elif rotation_type == 'small':
+                max_angle = config['train']['data_aug'].get('max_angle', 30)
+                ran_rot = [np.random.rand() > 0.5 for _ in range(3)]
+                ran_rot_90 = [False for _ in range(3)]
+                ran_angle = [max_angle * np.random.rand() * (2 * np.random.randint(0, 2) - 1) for _ in range(3)]
+            elif rotation_type == '90s':
+                ran_rot = [False for _ in range(3)]
+                ran_rot_90 = [np.random.rand() > 0.5 for _ in range(3)]
+                ran_angle = [0.0 for _ in range(3)]
+            else:
+                ran_rot = [False for _ in range(3)]
+                ran_rot_90 = [False for _ in range(3)]
+                ran_angle = [0.0 for _ in range(3)]
 
             # Add Gaussian noise to patch inputs
             for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):

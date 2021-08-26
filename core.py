@@ -207,7 +207,7 @@ class _ModelCore:
                     for img_file in img_file_list:
                         if img_file in inputs:
                             raw_inputs['global_' + img_file.replace('img', 'input')] = \
-                                torch.unsqueeze(inputs[img_file].type(torch.float32), 1)
+                                torch.unsqueeze(inputs['global_' + img_file].type(torch.float32), 1)
 
                 model_inputs['global_patch_location_bbox'] = inputs['global_patch_location_bbox'].type(torch.float32)
                 raw_inputs['global_patch_location_bbox'] = inputs['global_patch_location_bbox'].type(torch.float32)
@@ -518,7 +518,7 @@ class Trainer(_ModelCore):
         self.log_summary_every_n_iters = config['train'].get('log_summary_every_n_iters', 1)
         self.save_ckpt_every_n_iters = config['train'].get('save_ckpt_every_n_iters', 10)
         self.eval_score_higher_is_better = config['eval'].get('eval_score_higher_is_better', True)
-        self.unfrozen_layers = config['train'].get('unfrozen_layers', 'all')
+        self.trainable_layers = config['train'].get('trainable_layers', 'all')
 
         self.loss_fns = get_loss_fns(config, device=devices[0], logger=logger)
         # the first will be used as main eval metric
@@ -537,15 +537,15 @@ class Trainer(_ModelCore):
         else:
             self._load_checkpoint(ckpt_file=config['ckpt_file'])
 
-        self.freeze_layers()
+        self.set_trainable_layers()
 
         self.optimizer = create_optimizer(config, self.model)
         self.lr_scheduler = create_lr_scheduler(config, self.optimizer)
 
-    def freeze_layers(self):
-        if self.unfrozen_layers == 'all':
+    def set_trainable_layers(self):
+        if self.trainable_layers == 'all':
             self.logger.info('All layers are trainable')
-        elif self.unfrozen_layers == 'first':
+        elif self.trainable_layers == 'first':
             if self.config['model']['classname'] == 'GLIANet':
                 self.logger.info('Only the first layers are trainable')
                 for params in self.model.parameters():
@@ -558,10 +558,24 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
                     params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.parameters():
+                    params.requires_grad = True
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
-        elif self.unfrozen_layers == 'last':
+        elif self.trainable_layers == 'first_resnet':
+            if self.config['model']['classname'] == 'GLIANet':
+                self.logger.info('Only the first ResNet layers are trainable')
+                for params in self.model.parameters():
+                    params.requires_grad = False
+                for params in self.model.encoder_blocks[0].residual_block1.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.parameters():
+                    params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'last':
             if self.config['model']['classname'] == 'GLIANet':
                 self.logger.info('Only the last layers are trainable')
                 for params in self.model.parameters():
@@ -571,7 +585,7 @@ class Trainer(_ModelCore):
             else:
                 self.logger.info("Warning: freeze all layers but the last ones is not supported for model %s" %
                                  self.config['model']['classname'])
-        elif self.unfrozen_layers == 'first_and_last':
+        elif self.trainable_layers == 'first_and_last':
             if self.config['model']['classname'] == 'GLIANet':
                 self.logger.info('Only the first and last layers are trainable')
                 for params in self.model.parameters():
@@ -590,11 +604,12 @@ class Trainer(_ModelCore):
                 self.logger.info("Warning: freeze all layers but the first and last ones is not supported for "
                                  "model %s" % self.config['model']['classname'])
         else:
-            self.unfrozen_layers = 'all'
+            self.trainable_layers = 'all'
             self.logger.info('Warning: unsupported unfrozen layer %s. All layers are trainable' %
-                             self.unfrozen_layers)
+                             self.trainable_layers)
 
     def train(self):
+        self.logger.info('Train %s epochs with batch size %s' % (self.max_num_epochs - self.num_epoch + 1, self.batch_size))
         for _ in range(self.num_epoch, self.max_num_epochs + 1):
             # train for one epoch
             self.train_epoch()
@@ -820,12 +835,15 @@ class Evaler(Trainer):
                  eval_loader=None,
                  logger=logging.getLogger('Evaler')):
         super(Evaler, self).__init__(config, exp_path, devices, eval_loader=eval_loader, logger=logger)
-        self.eval_phase = config['eval'].get('phase', 'test')
 
-        if config.get('ckpt_file', None) is None:
-            self._load_checkpoint(is_best=self.load_best)
-        else:
-            self._load_checkpoint(ckpt_file=config['ckpt_file'])
+        self.eval_phase = config['eval'].get('phase', 'test')
+        if self.max_num_epochs < self.num_epoch:
+            self.max_num_epochs = self.num_epoch
+
+        # if config.get('ckpt_file', None) is None:
+        #     self._load_checkpoint(is_best=self.load_best)
+        # else:
+        #     self._load_checkpoint(ckpt_file=config['ckpt_file'])
 
     def eval(self):
         # eval for one epoch
