@@ -914,7 +914,7 @@ def random_rotate(img, dim, angle, is_mask=False, do_it=None):
         else:
             do_it = True
     if do_it:
-        out_img = scipy.ndimage.rotate(norm_img, angle, axes, reshape=False, order=order)
+        out_img = scipy.ndimage.rotate(norm_img, angle, axes, reshape=False, order=order, mode='nearest')
     else:
         out_img = norm_img
 

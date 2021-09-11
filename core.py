@@ -519,6 +519,11 @@ class Trainer(_ModelCore):
         self.save_ckpt_every_n_iters = config['train'].get('save_ckpt_every_n_iters', 10)
         self.eval_score_higher_is_better = config['eval'].get('eval_score_higher_is_better', True)
         self.trainable_layers = config['train'].get('trainable_layers', 'all')
+        if self.config['model']['classname'] == 'GLIANet':
+            self.depth_trainable_layers = config['train'].get('depth_trainable_layers', 1)
+            if not isinstance(self.depth_trainable_layers, int) or self.depth_trainable_layers < 1:
+                raise ValueError("'depth_trainable_layers' must be a positive integer, got "
+                                 + str(self.depth_trainable_layers))
 
         self.loss_fns = get_loss_fns(config, device=devices[0], logger=logger)
         # the first will be used as main eval metric
@@ -560,18 +565,68 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.parameters():
                     params.requires_grad = True
+                self.logger.info("Only the first layers are trainable")
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
-        elif self.trainable_layers == 'first_resnet':
+        elif self.trainable_layers == 'first_encoder':
             if self.config['model']['classname'] == 'GLIANet':
-                self.logger.info('Only the first ResNet layers are trainable')
+
+                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.encoder_blocks)))
+                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
+
                 for params in self.model.parameters():
                     params.requires_grad = False
-                for params in self.model.encoder_blocks[0].residual_block1.parameters():
-                    params.requires_grad = True
-                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.parameters():
-                    params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.encoder_blocks))):
+                    for params in self.model.encoder_blocks[depth].residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                        params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'first_encoder_decoder':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.encoder_blocks)))
+                self.logger.info('Only the first %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.encoder_blocks))):
+                    for params in self.model.encoder_blocks[depth].residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
@@ -582,6 +637,7 @@ class Trainer(_ModelCore):
                     params.requires_grad = False
                 for params in self.model.output_conv.parameters():
                     params.requires_grad = True
+                self.logger.info("Only the last layers are trainable")
             else:
                 self.logger.info("Warning: freeze all layers but the last ones is not supported for model %s" %
                                  self.config['model']['classname'])
@@ -600,6 +656,7 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.output_conv.parameters():
                     params.requires_grad = True
+                self.logger.info("Only the first and last layers are trainable")
             else:
                 self.logger.info("Warning: freeze all layers but the first and last ones is not supported for "
                                  "model %s" % self.config['model']['classname'])
@@ -664,7 +721,8 @@ class Trainer(_ModelCore):
 
             # update avg_losses
             if avg_losses is None:
-                avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
+                # avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
+                avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage() for _ in range(len(losses))]))
             for loss_key, loss_value in losses.items():
                 avg_losses[loss_key].update(loss_value.item(), self.batch_size)
 
@@ -761,7 +819,8 @@ class Trainer(_ModelCore):
                 main_target = list(targets.values())[0]
 
                 if eval_avg_losses is None:
-                    eval_avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
+                    # eval_avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
+                    eval_avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage() for _ in range(len(losses))]))
                 for loss_key, loss_value in losses.items():
                     eval_avg_losses[loss_key].update(loss_value.item(), self.batch_size)
 
@@ -840,11 +899,6 @@ class Evaler(Trainer):
         if self.max_num_epochs < self.num_epoch:
             self.max_num_epochs = self.num_epoch
 
-        # if config.get('ckpt_file', None) is None:
-        #     self._load_checkpoint(is_best=self.load_best)
-        # else:
-        #     self._load_checkpoint(ckpt_file=config['ckpt_file'])
-
     def eval(self):
         # eval for one epoch
         eval_score = self.evaluate_epoch(self.eval_phase)
@@ -902,7 +956,6 @@ class Inferencer(_ModelCore):
         instances = get_instances_from_file_or_folder(self.inference_file_or_folder, instance_type=self.input_type)
 
         for i, instance in enumerate(instances):
-            print(instance)
             if self.output_folder is None:
                 if self.input_type == 'nii':
                     output_file = instance[0].replace('.nii.gz', '_pred.nii.gz')
@@ -1021,12 +1074,18 @@ class Transfer(_ModelCore):
                  logger=logging.getLogger('Transfer')):
         super(Transfer, self).__init__(config, exp_path, devices, logger=logger)
 
+        self.eval_score_higher_is_better = config['eval'].get('eval_score_higher_is_better', True)
         self.optimizer = create_optimizer(config, self.model)
 
         if config.get('ckpt_file', None) is None:
             self._load_checkpoint(is_best=self.load_best)
         else:
             self._load_checkpoint(ckpt_file=config['ckpt_file'])
+
+        if self.eval_score_higher_is_better:
+            self.best_eval_score = float('-inf')
+        else:
+            self.best_eval_score = float('+inf')
 
     def adapt_model(self):
         if self.config['model']['classname'] == 'GLIANet':

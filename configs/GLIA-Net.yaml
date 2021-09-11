@@ -47,7 +47,8 @@ train:
   manual_seed: null  # set seed for random initialization
   num_epoch: 3  # 10  # number of training epoch
   batch_size: 2  # for each device/gpu
-  trainable_layers: all  # options are 'all', 'first', 'first_resnet', 'last' and 'first_and_last'
+  trainable_layers: all  # options are 'all', 'first', 'first_encoder', 'first_encoder_decoder', 'last' and 'first_and_last'
+  depth_trainable_layers: 1  # options are '1' to '5' for the classic GLIA-Net. Only used for 'trainable_layers: first_encoder' and 'first_encoder_decoder'
   data_aug:
     rotation: full  # options are 'null', '90s', 'small' and 'full'
     max_angle: 30
