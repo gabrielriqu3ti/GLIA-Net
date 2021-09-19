@@ -574,6 +574,27 @@ class Trainer(_ModelCore):
 
                 self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.encoder_blocks)))
+                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.encoder_blocks))):
+                    for params in self.model.encoder_blocks[depth].residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                        params.requires_grad = True
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'first_encoder_adaptor':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.encoder_blocks)))
                 self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.localizer_adaptor)))
                 self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
@@ -597,6 +618,34 @@ class Trainer(_ModelCore):
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
         elif self.trainable_layers == 'first_encoder_decoder':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.encoder_blocks)))
+                self.logger.info('Only the first %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.encoder_blocks))):
+                    for params in self.model.encoder_blocks[depth].residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'first_encoder_decoder_adaptor':
             if self.config['model']['classname'] == 'GLIANet':
 
                 self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
@@ -630,12 +679,97 @@ class Trainer(_ModelCore):
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
+        elif self.trainable_layers == 'last_decoder':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the last %d decoder layers and output conv are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'last_decoder_adaptor':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the last %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('Only the last output layers are trainable for local patches')
+                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'last_decoder_adaptor_global_feature_loss':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('Only the last %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('Only the last output layers are trainable for local patches')
+                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('Only the localizer loss layers are trainable')
+                self.logger.info('Only the last %d global localizer layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for params in self.model.localizer_loss.parameters():
+                    params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                    for params in getattr(self.model.global_localizer.feature_generator, "encode_block%d" % (
+                            min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))
+                            - depth)).parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
         elif self.trainable_layers == 'last':
             if self.config['model']['classname'] == 'GLIANet':
-                self.logger.info('Only the last layers are trainable')
+                self.logger.info('Only the output conv and localizer loss layers are trainable')
                 for params in self.model.parameters():
                     params.requires_grad = False
                 for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+                for params in self.model.localizer_loss.parameters():
                     params.requires_grad = True
                 self.logger.info("Only the last layers are trainable")
             else:
