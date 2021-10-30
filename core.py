@@ -3,6 +3,7 @@ import os
 import re
 import time
 from collections import OrderedDict
+import typing
 
 import numpy as np
 import torch
@@ -15,7 +16,6 @@ from utils.metrics import get_evaluation_metric
 from utils.model_utils import create_optimizer, create_lr_scheduler, CheckpointLogger, bbox2binary_mask, get_model
 from utils.project_utils import RunningAverage, maybe_create_path, write_dict_csv
 from utils.visualization import get_tensorboard_formatter, get_text_image
-
 
 class _ModelCore:
     def __init__(self,
@@ -855,7 +855,6 @@ class Trainer(_ModelCore):
 
             # update avg_losses
             if avg_losses is None:
-                # avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
                 avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage() for _ in range(len(losses))]))
             for loss_key, loss_value in losses.items():
                 avg_losses[loss_key].update(loss_value.item(), self.batch_size)
@@ -953,7 +952,6 @@ class Trainer(_ModelCore):
                 main_target = list(targets.values())[0]
 
                 if eval_avg_losses is None:
-                    # eval_avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage()] * len(losses)))
                     eval_avg_losses = OrderedDict(zip(list(losses.keys()), [RunningAverage() for _ in range(len(losses))]))
                 for loss_key, loss_value in losses.items():
                     eval_avg_losses[loss_key].update(loss_value.item(), self.batch_size)
@@ -1042,10 +1040,10 @@ class Evaler(Trainer):
 
 class Inferencer(_ModelCore):
     def __init__(self,
-                 config,
-                 exp_path,
+                 config: dict,
+                 exp_path: str,
                  devices,
-                 inference_file_or_folder,
+                 inference_file_or_folder: typing.Tuple[str],
                  output_folder=None,
                  input_type='nii',
                  save_binary=True,
@@ -1172,9 +1170,11 @@ class Inferencer(_ModelCore):
             print('\tsummarize and save...')
             overlap_count = np.where(overlap_count == 0, np.ones_like(overlap_count), overlap_count)
             prediction = prediction / overlap_count
+            prediction = self.test_loader_manager.remove_padding(prediction)
             prediction = self.test_loader_manager.restore_spacing(prediction, is_mask=False)
             if self.save_global:
                 global_map = global_map / overlap_count
+                global_map = self.test_loader_manager.remove_padding(global_map)
                 global_map = self.test_loader_manager.restore_spacing(global_map, is_mask=False)
 
             summarize_time = time.time() - summarize_since

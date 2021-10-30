@@ -29,8 +29,8 @@ parser.add_argument('-v', '--verbose', action='store_true',
 args = parser.parse_args()
 
 
-def inference(config, exp_path, logger, devices, input_file_or_folder, input_type, output_folder, save_binary,
-              save_prob, save_global):
+def inference(config: dict, exp_path: str, logger, devices, input_file_or_folder, input_type, output_folder,
+              save_binary: bool, save_prob: bool, save_global: bool):
     inference_data_manager = AneurysmSegTestManager(config, logger, devices)
     inferencer = Inferencer(config, exp_path, devices, input_file_or_folder, output_folder, input_type, save_binary,
                             save_prob, save_global, inference_data_manager, logger)

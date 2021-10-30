@@ -5,11 +5,13 @@ import platform
 import random
 import threading
 import time
+import typing
 from multiprocessing import Array
 from queue import Empty
 
 import SimpleITK as sitk
 import numpy as np
+from collections import OrderedDict
 import skimage.measure as measure
 import torch.utils.data
 from skimage.transform import resize
@@ -141,7 +143,7 @@ class TaskListQueue:
             for file_filed, img_type in self.reading_file_fields.items():
                 if ins_loading_error:
                     break
-                img = dict()
+                img = OrderedDict()
                 retry_count = 0
                 is_loaded = False
                 while retry_count < max_retry_num and not is_loaded:
@@ -202,8 +204,8 @@ class AneurysmSegDataset(torch.utils.data.IterableDataset):
     """
 
     def __init__(self,
-                 config,
-                 subset,
+                 config: dict,
+                 subset: str,
                  task_list_queue: TaskListQueue,
                  logger: logging.Logger
                  ):
@@ -274,7 +276,7 @@ class AneurysmSegDataset(torch.utils.data.IterableDataset):
 
 class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
     def __init__(self,
-                 config,
+                 config: dict,
                  logger: logging.Logger
                  ):
         super(AneurysmSegTestDataset).__init__()
@@ -298,7 +300,7 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         self.itk_image = None
         self.meta = None
 
-    def load(self, input_file_s, input_type):
+    def load(self, input_file_s: typing.Tuple[str], input_type: str):
         if input_type == 'dcm':
             reader = sitk.ImageSeriesReader()
             ins_id = os.path.basename(os.path.dirname(input_file_s[0][0]))
@@ -308,6 +310,7 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         self.img = []
         self.itk_image = []
         for input_file_id, input_file in enumerate(input_file_s):
+            print('input_file =', input_file)
             if input_type == 'dcm':
                 reader.SetFileNames(input_file)
             elif input_type == 'nii':
@@ -329,6 +332,13 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
                                                                self.img[input_file_id]['original_spacing'],
                                                                self.spacing)
                 self.img[input_file_id]['size'] = np.array(self.img[input_file_id]['data'].shape)
+            if np.any(self.img[input_file_id]['size'] < np.array(self.patch_size, np.float32)):
+                self.img[input_file_id]['data'] = add_padding_image(self.img[input_file_id]['data'],
+                                                                    tuple(max(self.img[input_file_id]['size'][i],
+                                                                              self.patch_size[i]) for i in range(3)))
+                self.img[input_file_id]['size_without_padding'] = self.img[input_file_id]['size'].copy()
+                self.img[input_file_id]['size'] = np.array([max(self.img[input_file_id]['size'][i],
+                                                                self.patch_size[i]) for i in range(3)], np.int32)
 
         self.meta = {'id': ins_id, 'hospital': 'unknown', 'spacing': self.img[0]['spacing']}
 
@@ -349,10 +359,8 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
 
         def _gen_patch(_starts):
             _ends = [_starts[i] + self.patch_size[i] for i in range(3)]
-            patch_exam_img = [img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
-                             for img in input_glo_img]
-            patch_brain_mask_img = brain_mask_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1],
-                                   _starts[2]:_ends[2]].copy()
+            patch_exam_img = [img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy() for img in input_glo_img]
+            patch_brain_mask_img = brain_mask_glo_img[_starts[0]:_ends[0], _starts[1]:_ends[1], _starts[2]:_ends[2]].copy()
 
             if self.with_global:
                 global_exam_img = [img.copy() for img in cut_input_glo_img]
@@ -382,12 +390,18 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         for starts in self.patch_starts[iter_start:iter_end]:
             yield _gen_patch(starts)
 
+    def remove_padding(self, prediction):
+        if 'size_without_padding' in self.img[0].keys():
+            new_size = self.img[0]['size_without_padding']
+            prediction = prediction[0:new_size[0], 0:new_size[1], 0:new_size[2]].copy()
+        return prediction
+
     def restore_spacing(self, prediction, is_mask=True):
         if self.spacing is not None:
             if is_mask:
-                return resize_segmentation(prediction, new_shape=self.img['original_size'])
+                return resize_segmentation(prediction, new_shape=self.img[0]['original_size'])
             else:
-                return resize_image(prediction, new_shape=self.img['original_size'])
+                return resize_image(prediction, new_shape=self.img[0]['original_size'])
         return prediction
 
 
@@ -418,11 +432,14 @@ class AneurysmSegTestManager:
         pred_itk_image.CopyInformation(self.test_dataset.itk_image[0])
         sitk.WriteImage(pred_itk_image, output_file)
 
+    def remove_padding(self, prediction):
+        return self.test_dataset.remove_padding(prediction)
+
     def restore_spacing(self, prediction, is_mask=True):
         return self.test_dataset.restore_spacing(prediction, is_mask)
 
 
-def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
+def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, reading_file_fields=None,
                             sliding_window=False, balance_label=True,
                             data_aug=True, random_seed=None, pos_neg_ratio=(1, 1)):
     """
@@ -434,6 +451,7 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
     :param sliding_window: false to random select negative samples
     :param balance_label: if true, repeat positive samples to balance labels.
     :param data_aug: useful for training
+    :param random_seed
     :param pos_neg_ratio: only work if balance_label is true
     :return: input_patch, label_patch
     """
@@ -445,6 +463,7 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
 
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
     label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
+    print('img_files = ', img_files)
 
     input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
@@ -470,22 +489,49 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
         return None
 
     if any([label_glo_img.shape[i] < patch_size[i] for i in range(3)]):
-        logger.warning('Subject %s is too small and cannot fit in one patch.' % data['id'])
-        return None
+        logger.warning('Subject %s is too small and cannot fit in one patch. Artificial extension will be applied'
+                       % data['id'])
+
+        new_shape = tuple([max(label_glo_img.shape[i], patch_size[i]) for i in range(3)])
+
+        # extend too small images
+        # extend label mask with 0s
+        label_glo_img_resized = np.zeros(new_shape, dtype=label_glo_img.dtype)
+        label_glo_img_resized[:label_glo_img.shape[0],
+        :label_glo_img.shape[1],
+        :label_glo_img.shape[2]] = label_glo_img
+        label_glo_img = label_glo_img_resized
+
+        # extend brain mask with 0s
+        brain_mask_glo_img_resized = np.zeros(new_shape, dtype=brain_mask_glo_img.dtype)
+        brain_mask_glo_img_resized[:brain_mask_glo_img.shape[0],
+        :brain_mask_glo_img.shape[1],
+        :brain_mask_glo_img.shape[2]] = brain_mask_glo_img
+        brain_mask_glo_img = brain_mask_glo_img_resized
+
+        # extend inputs with the last voxel
+        for img_i in range(len(input_glo_img_list)):
+            input_glo_img_resized = np.ones(new_shape, dtype=input_glo_img_list[img_i].dtype) * input_glo_img_list[img_i][-1, -1, -1]
+            input_glo_img_resized[:input_glo_img_list[img_i].shape[0],
+            :input_glo_img_list[img_i].shape[1],
+            :input_glo_img_list[img_i].shape[2]] = input_glo_img_list[img_i]
+            input_glo_img_list[img_i] = input_glo_img_resized
 
     if with_global:
         global_localizer = GlobalLocalizer(brain_mask_glo_img)
         cut_input_glo_img_list = []
         for input_glo_img in input_glo_img_list:
-            cut_input_glo_img_list.append(global_localizer.cut_edge(input_glo_img, [96, 96, 96], is_mask=False))
+            cut_input_glo_img_list.append(global_localizer.cut_edge(input_glo_img, patch_size, is_mask=False))
 
     def _gen_patch(_starts):
+        expanded_size = tuple([int(np.ceil(np.sqrt(2) * patch_size[i]) + 2) for i in range(3)])
+        rot_init_border = [(expanded_size[i] - patch_size[i]) // 2 for i in range(3)]
+        rot_end_border = [expanded_size[i] - (expanded_size[i] - patch_size[i]) // 2 for i in range(3)]
         _ends = [_starts[i] + patch_size[i] for i in range(3)]
-        _starts_ext = [max(start - 21, 0) for start in _starts]
-        _ends_ext = [min(end + 21, shape) for (end, shape) in zip(_ends, label_glo_img.shape)]
-        _starts_border = [max(21 - start, 0) for start in _starts]
-        _ends_border = [start_border + end_ext - start_ext for (start_border, start_ext, end_ext)
-                        in zip(_starts_border, _starts_ext, _ends_ext)]
+        _starts_ext = [max(_starts[i] - rot_init_border[i], 0) for i in range(3)]
+        _ends_ext = [min(_ends[i] + rot_init_border[i], label_glo_img.shape[i]) for i in range(3)]
+        _starts_border = [max(rot_init_border[i] - _starts[i], 0) for i in range(3)]
+        _ends_border = [_starts_border[i] + _ends_ext[i] - _starts_ext[i] for i in range(3)]
 
         if [end - start for (start, end) in zip(_starts_ext, _ends_ext)] != \
                 [end - start for (start, end) in zip(_starts_border, _ends_border)]:
@@ -503,28 +549,28 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
         # Initialize patches with 0s and expanded size to allow rotation
         patch_exam_ext_img_list = []
         for _ in range(len(input_glo_img_list)):
-            patch_exam_ext_img_list.append(np.zeros((138, 138, 138), dtype=np.float32))
-        patch_brain_mask_ext_img = np.zeros((138, 138, 138), dtype=np.int32)
-        patch_label_ext_img = np.zeros((138, 138, 138), dtype=np.int32)
+            patch_exam_ext_img_list.append(np.zeros(expanded_size, dtype=np.float32))
+        patch_brain_mask_ext_img = np.zeros(expanded_size, dtype=np.int32)
+        patch_label_ext_img = np.zeros(expanded_size, dtype=np.int32)
 
         # Copy patch values from original images
         for img_id in range(len(input_glo_img_list)):
             patch_exam_ext_img_list[img_id][_starts_border[0]:_ends_border[0],
-                                            _starts_border[1]:_ends_border[1],
-                                            _starts_border[2]:_ends_border[2]] = \
+            _starts_border[1]:_ends_border[1],
+            _starts_border[2]:_ends_border[2]] = \
                 input_glo_img_list[img_id][_starts_ext[0]:_ends_ext[0],
-                                           _starts_ext[1]:_ends_ext[1],
-                                           _starts_ext[2]:_ends_ext[2]].copy()
+                _starts_ext[1]:_ends_ext[1],
+                _starts_ext[2]:_ends_ext[2]].copy()
         patch_brain_mask_ext_img[_starts_border[0]:_ends_border[0],
-                                 _starts_border[1]:_ends_border[1],
-                                 _starts_border[2]:_ends_border[2]] = brain_mask_glo_img[_starts_ext[0]:_ends_ext[0],
-                                                                                         _starts_ext[1]:_ends_ext[1],
-                                                                                         _starts_ext[2]:_ends_ext[2]].copy()
+        _starts_border[1]:_ends_border[1],
+        _starts_border[2]:_ends_border[2]] = brain_mask_glo_img[_starts_ext[0]:_ends_ext[0],
+                                             _starts_ext[1]:_ends_ext[1],
+                                             _starts_ext[2]:_ends_ext[2]].copy()
         patch_label_ext_img[_starts_border[0]:_ends_border[0],
-                            _starts_border[1]:_ends_border[1],
-                            _starts_border[2]:_ends_border[2]] = label_glo_img[_starts_ext[0]:_ends_ext[0],
-                                                                               _starts_ext[1]:_ends_ext[1],
-                                                                               _starts_ext[2]:_ends_ext[2]].copy()
+        _starts_border[1]:_ends_border[1],
+        _starts_border[2]:_ends_border[2]] = label_glo_img[_starts_ext[0]:_ends_ext[0],
+                                             _starts_ext[1]:_ends_ext[1],
+                                             _starts_ext[2]:_ends_ext[2]].copy()
 
         match_patch_size = True
         for patch_exam_ext_img in patch_exam_ext_img_list:
@@ -540,7 +586,7 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
             global_exam_img_list = []
             for cut_input_glo_img in cut_input_glo_img_list:
                 global_exam_img_list.append(cut_input_glo_img.copy())
-            global_location_mask = global_localizer.get_position_map(_starts, _ends, [96, 96, 96])
+            global_location_mask = global_localizer.get_position_map(_starts, _ends, patch_size)
             global_label = np.array(1 if patch_label_ext_img.sum() > 3 else 0)
 
         if data_aug:
@@ -568,7 +614,8 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
             # Add Gaussian noise to patch inputs
             for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):
                 patch_exam_ext_img_list[patch_exam_ext_img_id] += np.random.normal(0.0, 10.0,
-                                                                                   patch_exam_ext_img_list[patch_exam_ext_img_id].shape)
+                                                                                   patch_exam_ext_img_list[
+                                                                                       patch_exam_ext_img_id].shape)
 
             patch_bundle = np.stack(patch_exam_ext_img_list, 0)
             patch_brain_mask_ext_img = np.expand_dims(patch_brain_mask_ext_img, 0)
@@ -583,7 +630,8 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
             # Add random rotation to patches
             patch_bundle = random_rotate_all(patch_bundle, ran_angle, is_mask=False, do_it=ran_rot)
             if enable_brain_mask_rot:
-                patch_brain_mask_ext_img = random_rotate_all(patch_brain_mask_ext_img, ran_angle, is_mask=True, do_it=ran_rot)
+                patch_brain_mask_ext_img = random_rotate_all(patch_brain_mask_ext_img, ran_angle, is_mask=True,
+                                                             do_it=ran_rot)
             patch_label_ext_img = random_rotate_all(patch_label_ext_img, ran_angle, is_mask=True, do_it=ran_rot)
 
             patch_bundle = random_rotate_90s_all(patch_bundle, ran_rot_90)
@@ -593,7 +641,8 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
 
             *patch_exam_ext_img_list, = np.split(patch_bundle, patch_bundle.shape[0])
             for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):
-                patch_exam_ext_img_list[patch_exam_ext_img_id] = np.squeeze(patch_exam_ext_img_list[patch_exam_ext_img_id].copy(), 0)
+                patch_exam_ext_img_list[patch_exam_ext_img_id] = np.squeeze(
+                    patch_exam_ext_img_list[patch_exam_ext_img_id].copy(), 0)
             patch_brain_mask_ext_img = np.squeeze(patch_brain_mask_ext_img.copy(), 0)
             patch_label_ext_img = np.squeeze(patch_label_ext_img.copy(), 0)
 
@@ -623,11 +672,17 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
 
         patch_exam_img_list = []
         for patch_exam_ext_img in patch_exam_ext_img_list:
-            patch_exam_img_list.append(patch_exam_ext_img[21:117, 21:117, 21:117].copy())
-        patch_brain_mask_img = patch_brain_mask_ext_img[21:117, 21:117, 21:117].copy()
-        patch_label_img = patch_label_ext_img[21:117, 21:117, 21:117].copy()
+            patch_exam_img_list.append(patch_exam_ext_img[rot_init_border[0]:rot_end_border[0],
+                                       rot_init_border[1]:rot_end_border[1],
+                                       rot_init_border[2]:rot_end_border[2]].copy())
+        patch_brain_mask_img = patch_brain_mask_ext_img[rot_init_border[0]:rot_end_border[0],
+                               rot_init_border[1]:rot_end_border[1],
+                               rot_init_border[2]:rot_end_border[2]].copy()
+        patch_label_img = patch_label_ext_img[rot_init_border[0]:rot_end_border[0],
+                          rot_init_border[1]:rot_end_border[1],
+                          rot_init_border[2]:rot_end_border[2]].copy()
 
-        inputs = dict()
+        inputs = OrderedDict()
         for input_id in range(len(img_files)):
             inputs[img_files[input_id].replace('_file', '')] = patch_exam_img_list[input_id]
         inputs['brain_mask'] = patch_brain_mask_img
@@ -641,7 +696,8 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
 
     if not sliding_window:
         # compute patches number (50-300 samples per study)
-        sum_brain_mask_number = 1 * np.sum(brain_mask_glo_img[brain_mask_glo_img == 1]) // (patch_size[0] * patch_size[1] * patch_size[2])
+        sum_brain_mask_number = 1 * np.sum(brain_mask_glo_img[brain_mask_glo_img == 1]) // (
+                patch_size[0] * patch_size[1] * patch_size[2])
         logger.debug('number of patches generated in %s is %s' % (data['id'], sum_brain_mask_number))
 
         pos_region_centers = get_positive_region_centers(label_glo_img)
@@ -685,7 +741,8 @@ def ane_seg_patch_generator(data, config, logger, reading_file_fields=None,
     # sliding window
     else:
         assert not balance_label, 'sliding_window do not support balance label now'
-        starts_list = get_sliding_window_patch_starts(input_glo_img_list[0], patch_size, overlap_step, brain_mask_glo_img)
+        starts_list = get_sliding_window_patch_starts(input_glo_img_list[0], patch_size, overlap_step,
+                                                      brain_mask_glo_img)
         logger.debug('number of patches generated in %s is %s' % (data['id'], len(starts_list)))
         for starts in starts_list:
             yield _gen_patch(starts)
@@ -729,7 +786,7 @@ def resize_image(image, old_spacing=None, new_spacing=None, new_shape=None, orde
     return resized_image
 
 
-def resize_segmentation(segmentation, old_spacing=None, new_spacing=None, new_shape=None, order=0, cval=0):
+def resize_segmentation(segmentation: np.ndarray, old_spacing=None, new_spacing=None, new_shape=None, order=0, cval=0):
     '''
     Taken from batchgenerators (https://github.com/MIC-DKFZ/batchgenerators) to prevent dependency
 
@@ -758,6 +815,28 @@ def resize_segmentation(segmentation, old_spacing=None, new_spacing=None, new_sh
                                        anti_aliasing=False)
             reshaped[reshaped_multihot >= 0.5] = c
         return reshaped
+
+
+def add_padding(image: np.ndarray, new_shape=None, is_mask=False):
+    assert new_shape is not None and all(image.shape[i] <= new_shape[i] for i in range(3))
+    if is_mask:
+        return add_padding_image(image, new_shape)
+    else:
+        return add_padding_segmentation_mask(image, new_shape)
+
+
+def add_padding_image(image: np.ndarray, new_shape=None):
+    assert new_shape is not None and all(image.shape[i] <= new_shape[i] for i in range(3))
+    padded_image = image[-1, -1, -1] * np.ones(new_shape, dtype=image.dtype)
+    padded_image[:image.shape[0], :image.shape[1], :image.shape[2]] = image.copy()
+    return padded_image
+
+
+def add_padding_segmentation_mask(mask: np.ndarray, new_shape=None):
+    assert new_shape is not None and all(mask.shape[i] <= new_shape[i] for i in range(3))
+    padded_mask = np.zeros(new_shape, dtype=mask.dtype)
+    padded_mask[:mask.shape[0], :mask.shape[1], :mask.shape[2]] = mask.copy()
+    return padded_mask
 
 
 class GlobalLocalizer:
@@ -834,7 +913,7 @@ class GlobalLocalizer:
                                                2 * starts[i] * new_shape[reference_index] + new_shape[i] *
                                                self.original_shape[reference_index] -
                                                self.original_shape[i] * new_shape[reference_index]) / (
-                                                   2 * self.original_shape[reference_index]))), new_shape[i] - 1) for i
+                                               2 * self.original_shape[reference_index]))), new_shape[i] - 1) for i
                       in
                       range(3)]
         new_ends = [min(max(new_starts[i], round((
@@ -946,11 +1025,11 @@ def random_rotate_90s(img, dim, do_it=None):
     return out_img
 
 
-def get_instances_from_file_or_folder(instance_file_or_folder, instance_type='nii', drop_phrase=None,
+def get_instances_from_file_or_folder(instance_file_or_folder: typing.Tuple[str], instance_type='nii', drop_phrase=None,
                                       require_phrase=None):
     """
     get list of paths pointing to the images of each exam
-    :param instance_file_or_folder: list of paths
+    :param instance_file_or_folder: tuple of paths
     :param instance_type: nii or dcm
     :param drop_phrase: sequence of phrases. images whose path contains at least one of these phrases are dropped
     :param require_phrase: sequence of phrases. images whose path doesn't contain all phrases are dropped
