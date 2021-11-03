@@ -64,11 +64,11 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
                                                     output_path.absolute().as_posix(), threshold)
 
         dsc = get_dsc(annotation_image, output_image)
-        #h95 = get_hausdorff(annotation_image, output_image)
+        # h95 = get_hausdorff(annotation_image, output_image)
         vs = get_vs(annotation_image, output_image)
 
         dsc_list.append(dsc)
-        #h95_list.append(h95)
+        # h95_list.append(h95)
         vs_list.append(vs)
 
         if detection:
@@ -82,21 +82,21 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
 
             print('%d exam %s : DSC=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
                   % (exam_i, filename.split('.')[0], dsc, vs, sensitivity, fps))
-            #print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
+            # print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
             #      % (exam_i, filename.split('.')[0], dsc, h95, vs, sensitivity, fps))
         else:
             print('%d exam %s : DSC=%.3f VS=%.3f' % (exam_i, filename.split('.')[0], dsc, vs))
             # print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f' % (exam_i, filename.split('.')[0], dsc, h95,  vs))
 
     avg_dsc = sum(dsc_list) / len(dsc_list)
-    #avg_h95 = sum(h95_list) / len(h95_list)
+    # avg_h95 = sum(h95_list) / len(h95_list)
     avg_vs = sum(vs_list) / len(vs_list)
     avg_sensitivity = sum(sensitivity_list) / len(sensitivity_list)
     avg_fps = sum(fps_list) / len(fps_list)
 
     print('---OVERALL STATISTICS---')
     print('Dice: %.3f (higher is better, min=0, max=1)' % avg_dsc)
-    #print('HD: %.3f mm (lower is better, min=0, max=+inf)' % avg_h95)
+    # print('HD: %.3f mm (lower is better, min=0, max=+inf)' % avg_h95)
     print('VS: %.3f (higher is better, min=0, max=1)' % avg_vs)
 
     if detection:

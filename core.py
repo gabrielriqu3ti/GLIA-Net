@@ -1050,7 +1050,8 @@ class Inferencer(_ModelCore):
                  save_prob=False,
                  save_global=False,
                  test_loader_manager=None,
-                 logger=logging.getLogger('Inferencer')):
+                 logger=logging.getLogger('Inferencer'),
+                 patch_interpolation_order=1):
         super(Inferencer, self).__init__(config, exp_path, devices, test_loader=test_loader_manager.test_loader,
                                          logger=logger)
         self.test_loader_manager = test_loader_manager
@@ -1074,6 +1075,9 @@ class Inferencer(_ModelCore):
         else:
             self.prob_threshold = 0.5
 
+        self.patch_interpolation_order = patch_interpolation_order
+        self.patch_interpolation_weight = self.test_loader_manager.get_patch_interpolation_weight(self.patch_interpolation_order)
+
         if config.get('ckpt_file', None) is None:
             self._load_checkpoint(is_best=self.load_best)
         else:
@@ -1084,7 +1088,7 @@ class Inferencer(_ModelCore):
             self.logger.error('Try to %s but there is no test_loader' % self.test_phase)
             return 0.0
 
-        self.logger.info('Begin to scan input_folder_or_file %s...' % self.inference_file_or_folder)
+        self.logger.info('Begin to scan input_folder_or_file ' + str(self.inference_file_or_folder) + '...')
         instances = get_instances_from_file_or_folder(self.inference_file_or_folder, instance_type=self.input_type)
 
         for i, instance in enumerate(instances):
@@ -1148,9 +1152,9 @@ class Inferencer(_ModelCore):
                     patch_starts = metas['patch_starts'][j]
                     patch_ends = [patch_starts[i] + prediction_patch_size[i] for i in range(3)]
                     prediction[patch_starts[0]:patch_ends[0], patch_starts[1]:patch_ends[1],
-                    patch_starts[2]:patch_ends[2]] += main_out
+                    patch_starts[2]:patch_ends[2]] += self.patch_interpolation_weight * main_out
                     overlap_count[patch_starts[0]:patch_ends[0], patch_starts[1]:patch_ends[1],
-                    patch_starts[2]:patch_ends[2]] += 1
+                    patch_starts[2]:patch_ends[2]] += self.patch_interpolation_weight
                     if self.save_global:
                         global_map[patch_starts[0]:patch_ends[0], patch_starts[1]:patch_ends[1],
                         patch_starts[2]:patch_ends[2]] += global_output[j]
@@ -1176,6 +1180,14 @@ class Inferencer(_ModelCore):
                 global_map = global_map / overlap_count
                 global_map = self.test_loader_manager.remove_padding(global_map)
                 global_map = self.test_loader_manager.restore_spacing(global_map, is_mask=False)
+
+            # disregard zero border
+            mask = self.test_loader_manager.get_non_zero_mask(same_non_zero=True)
+            mask = self.test_loader_manager.remove_padding(mask)
+            mask = self.test_loader_manager.restore_spacing(mask, is_mask=True)
+            prediction[np.logical_not(mask)] = 0
+            if self.save_global:
+                global_map[np.logical_not(mask)] = 0
 
             summarize_time = time.time() - summarize_since
             processing_time = time.time() - instance_start_time

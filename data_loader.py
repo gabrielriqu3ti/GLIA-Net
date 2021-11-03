@@ -390,6 +390,13 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         for starts in self.patch_starts[iter_start:iter_end]:
             yield _gen_patch(starts)
 
+    def get_non_zero_mask(self, same_non_zero: bool):
+        input_glo_img = [img['data'] for img in self.img]
+        return get_non_zero_mask(input_glo_img, same_non_zero)
+
+    def get_patch_interpolation_weight(self, order):
+        return get_patch_interpolation_weight(self.patch_size, order)
+
     def remove_padding(self, prediction):
         if 'size_without_padding' in self.img[0].keys():
             new_size = self.img[0]['size_without_padding']
@@ -423,6 +430,12 @@ class AneurysmSegTestManager:
     @property
     def patch_size(self):
         return self.test_dataset.patch_size
+
+    def get_non_zero_mask(self, same_non_zero: bool):
+        return self.test_dataset.get_non_zero_mask(same_non_zero)
+
+    def get_patch_interpolation_weight(self, order):
+        return self.test_dataset.get_patch_interpolation_weight(order)
 
     def load(self, input_file_s, input_type):
         self.test_dataset.load(input_file_s, input_type)
@@ -463,7 +476,7 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
 
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
     label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
-    print('img_files = ', img_files)
+    # print('img_files = ', img_files)
 
     input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
@@ -837,6 +850,83 @@ def add_padding_segmentation_mask(mask: np.ndarray, new_shape=None):
     padded_mask = np.zeros(new_shape, dtype=mask.dtype)
     padded_mask[:mask.shape[0], :mask.shape[1], :mask.shape[2]] = mask.copy()
     return padded_mask
+
+
+def get_non_zero_mask(input_img_list: typing.List[np.ndarray], same_non_zero: bool):
+    mask_list = []
+    for input_img in input_img_list:
+        mask_list.append(np.zeros_like(input_img, dtype=bool))
+        starts = [0, 0, 0]
+        ends = list(input_img.shape)
+        while starts[0] < ends[0] - 1:
+            if np.allclose(input_img[starts[0], :, :], 0):
+                starts[0] += 1
+            else:
+                break
+        while starts[1] < ends[1] - 1:
+            if np.allclose(input_img[:, starts[1], :], 0):
+                starts[1] += 1
+            else:
+                break
+        while starts[2] < ends[2] - 1:
+            if np.allclose(input_img[:, :, starts[2]], 0):
+                starts[2] += 1
+            else:
+                break
+        while ends[0] > starts[0] + 1:
+            if np.allclose(input_img[ends[0] - 1, :, :], 0):
+                ends[0] -= 1
+            else:
+                break
+        while ends[1] > starts[1] + 1:
+            if np.allclose(input_img[:, ends[1] - 1, :], 0):
+                ends[1] -= 1
+            else:
+                break
+        while ends[2] > starts[2] + 1:
+            if np.allclose(input_img[:, :, ends[2] - 1], 0):
+                ends[2] -= 1
+            else:
+                break
+
+        print("starts -> ends:", starts, "->", ends)
+        mask_list[-1][starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]] = True
+
+    mask = mask_list[0].copy()
+    if same_non_zero:
+        for mask_img in mask_list[0:]:
+            np.logical_and(mask, mask_img, out=mask)
+    else:
+        for mask_img in mask_list:
+            np.logical_or(mask, mask_img, out=mask)
+
+    return mask
+
+
+def get_patch_interpolation_weight(shape: typing.Union[tuple, list], order: int):
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError("shape must be a tuple or a list, received " + str(type(shape)))
+    if len(shape) != 3:
+        raise ValueError("shape must have lenght equal to 3, received %d" % len(shape))
+
+    if not isinstance(order, int):
+        raise TypeError("order must be an integer, received " + str(type(order)))
+    if order == 0:
+        return np.ones(shape, np.float32)
+    elif order == 1:
+        # get indices in each dimension
+        c0 = np.tile(np.arange(shape[0]).reshape(shape[0], 1, 1), (1, shape[1], shape[2]))
+        c1 = np.tile(np.arange(shape[1]).reshape(1, shape[1], 1), (shape[0], 1, shape[2]))
+        c2 = np.tile(np.arange(shape[2]).reshape(1, 1, shape[2]), (shape[0], shape[1], 1))
+
+        # weight more central voxels
+        weight = sum(shape) - (abs(2*c0 + 1. - shape[0]) + abs(2*c1 + 1. - shape[1]) + abs(2*c2 + 1. - shape[2])) / 2
+        # minimum weight is 1
+        weight = weight - np.min(weight) + 1
+
+        return weight
+    else:
+        raise ValueError("supported values of 'order' are 0 and 1, received %d" % order)
 
 
 class GlobalLocalizer:

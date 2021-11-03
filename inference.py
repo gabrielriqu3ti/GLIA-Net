@@ -26,14 +26,16 @@ parser.add_argument('-g', '--save_global', type=str2bool, default='false', requi
                     help='whether to save global positioning outputs.')
 parser.add_argument('-v', '--verbose', action='store_true',
                     help='whether to use verbose/debug logging level.')
+parser.add_argument('-w', '--patch_interpolation_order', type=int, default=1, required=False,
+                    help='order of the interpolation of the patches.')
 args = parser.parse_args()
 
 
 def inference(config: dict, exp_path: str, logger, devices, input_file_or_folder, input_type, output_folder,
-              save_binary: bool, save_prob: bool, save_global: bool):
+              save_binary: bool, save_prob: bool, save_global: bool, patch_interpolation_order: int):
     inference_data_manager = AneurysmSegTestManager(config, logger, devices)
     inferencer = Inferencer(config, exp_path, devices, input_file_or_folder, output_folder, input_type, save_binary,
-                            save_prob, save_global, inference_data_manager, logger)
+                            save_prob, save_global, inference_data_manager, logger, patch_interpolation_order)
     inferencer.inference()
 
 
@@ -50,9 +52,10 @@ if __name__ == '__main__':
     logger.debug('config loaded:\n%s', config)
     devices = get_devices(args.device, logger)
     logger.info('use device %s' % args.device)
+    patch_interpolation_order = args.patch_interpolation_order
 
     try:
         inference(config, exp_path, logger, devices, tuple(args.input_file_or_folder.split(',')), args.input_type, args.output_folder,
-                  args.save_binary, args.save_prob, args.save_global)
+                  args.save_binary, args.save_prob, args.save_global, patch_interpolation_order)
     except Exception as e:
         logger.exception(e)
