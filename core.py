@@ -4,7 +4,7 @@ import re
 import time
 from collections import OrderedDict
 import typing
-
+import random
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
@@ -547,6 +547,8 @@ class Trainer(_ModelCore):
         self.optimizer = create_optimizer(config, self.model)
         self.lr_scheduler = create_lr_scheduler(config, self.optimizer)
 
+        self.rng = torch.get_rng_state()
+
     def set_trainable_layers(self):
         if self.trainable_layers == 'all':
             self.logger.info('All layers are trainable')
@@ -801,8 +803,15 @@ class Trainer(_ModelCore):
 
     def train(self):
         self.logger.info('Train %s epochs with batch size %s' % (self.max_num_epochs - self.num_epoch + 1, self.batch_size))
-        for _ in range(self.num_epoch, self.max_num_epochs + 1):
+        for epoch in range(self.num_epoch, self.max_num_epochs + 1):
             # train for one epoch
+            # set random seed as a function of the epoch for training
+            if self.config['train'].get('manual_seed', 0) is None:
+                seed = epoch
+            else:
+                seed = int(self.config['train'].get('manual_seed', 0)) + epoch
+            random.seed(seed)
+            np.random.seed(seed)
             self.train_epoch()
             if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.StepLR):
@@ -810,6 +819,10 @@ class Trainer(_ModelCore):
             # occasionally eval for one epoch
             if self.eval_every_n_epochs != 0 and self.num_epoch % self.eval_every_n_epochs == 0:
                 # evaluate on evaluation set
+                # set random seed as a constant value of the epoch for evaluation
+                seed = 10
+                random.seed(seed)
+                np.random.seed(seed)
                 eval_score = self.evaluate_epoch()
                 # adjust learning rate if necessary
                 if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -842,16 +855,10 @@ class Trainer(_ModelCore):
 
             raw_outputs = self._wrap_outputs(self.model(self._wrap_inputs(inputs)))
             outputs, losses = self._compute_loss_and_output(raw_outputs, targets, weights)
-            # print("raw_outputs['local_output'].shape:", raw_outputs['local_output'].shape)
-            # print("raw_outputs['global_output'].shape:", raw_outputs['global_output'].shape)
 
             main_output = list(outputs.values())[0]
             main_target = list(targets.values())[0]
             main_loss = list(losses.values())[0]
-
-            # print("list(outputs.keys()):", list(outputs.keys()))
-            # print("list(targets.keys()):", list(targets.keys()))
-            # print("list(losses.keys()):", list(losses.keys()))
 
             # update avg_losses
             if avg_losses is None:
@@ -1050,8 +1057,7 @@ class Inferencer(_ModelCore):
                  save_prob=False,
                  save_global=False,
                  test_loader_manager=None,
-                 logger=logging.getLogger('Inferencer'),
-                 patch_interpolation_order=1):
+                 logger=logging.getLogger('Inferencer')):
         super(Inferencer, self).__init__(config, exp_path, devices, test_loader=test_loader_manager.test_loader,
                                          logger=logger)
         self.test_loader_manager = test_loader_manager
@@ -1075,7 +1081,7 @@ class Inferencer(_ModelCore):
         else:
             self.prob_threshold = 0.5
 
-        self.patch_interpolation_order = patch_interpolation_order
+        self.patch_interpolation_order = config['data'].get('patch_interpolation_order', 0)
         self.patch_interpolation_weight = self.test_loader_manager.get_patch_interpolation_weight(self.patch_interpolation_order)
 
         if config.get('ckpt_file', None) is None:

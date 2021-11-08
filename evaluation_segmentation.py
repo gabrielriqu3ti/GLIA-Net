@@ -42,7 +42,7 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
     metadata = [exam for exam in metadata if exam['subset'] == 'eval']
 
     dsc_list = []
-    #h95_list = []
+    h95_list = []
     vs_list = []
 
     sensitivity_list = []
@@ -52,7 +52,6 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
         filename = exam['aneurysm_seg_file'].split('/')[-1]
         filename_location = filename.split('.')[0] + '.txt'
 
-        print(f"exam {exam_i}: {filename}")
         output_path = output_dir_path / filename
         if not output_path.exists():
             raise Exception('output file not found at %s' % output_path.absolute())
@@ -64,12 +63,19 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
                                                     output_path.absolute().as_posix(), threshold)
 
         dsc = get_dsc(annotation_image, output_image)
-        # h95 = get_hausdorff(annotation_image, output_image)
+        try:
+            h95 = get_hausdorff(annotation_image, output_image)
+        except Exception as e:
+            print(f"ERROR: {e}")
+            h95 = np.nan
         vs = get_vs(annotation_image, output_image)
 
-        dsc_list.append(dsc)
-        # h95_list.append(h95)
-        vs_list.append(vs)
+        if not np.isnan(dsc):
+            dsc_list.append(dsc)
+        if not np.isnan(h95):
+            h95_list.append(h95)
+        if not np.isnan(vs):
+            vs_list.append(vs)
 
         if detection:
             annotation_locations = eval_det.get_locations(location_dir_path / filename_location)
@@ -77,26 +83,27 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
 
             sensitivity, fps = eval_det.get_detection_metrics(annotation_locations, output_locations, annotation_image)
 
-            sensitivity_list.append(sensitivity)
+            if not np.isnan(sensitivity):
+                sensitivity_list.append(sensitivity)
             fps_list.append(fps)
 
-            print('%d exam %s : DSC=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
-                  % (exam_i, filename.split('.')[0], dsc, vs, sensitivity, fps))
-            # print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
-            #      % (exam_i, filename.split('.')[0], dsc, h95, vs, sensitivity, fps))
+            print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f sensitivity=%.3f FPs/exam=%d'
+                  % (exam_i, filename.split('.')[0], dsc, h95, vs, sensitivity, fps))
         else:
-            print('%d exam %s : DSC=%.3f VS=%.3f' % (exam_i, filename.split('.')[0], dsc, vs))
-            # print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f' % (exam_i, filename.split('.')[0], dsc, h95,  vs))
+            print('%d exam %s : DSC=%.3f HD=%.3f VS=%.3f' % (exam_i, filename.split('.')[0], dsc, h95,  vs))
 
     avg_dsc = sum(dsc_list) / len(dsc_list)
-    # avg_h95 = sum(h95_list) / len(h95_list)
+    if h95_list:
+        avg_h95 = sum(h95_list) / len(h95_list)
+    else:
+        avg_h95 = np.nan
     avg_vs = sum(vs_list) / len(vs_list)
     avg_sensitivity = sum(sensitivity_list) / len(sensitivity_list)
     avg_fps = sum(fps_list) / len(fps_list)
 
     print('---OVERALL STATISTICS---')
     print('Dice: %.3f (higher is better, min=0, max=1)' % avg_dsc)
-    # print('HD: %.3f mm (lower is better, min=0, max=+inf)' % avg_h95)
+    print('HD: %.3f mm (lower is better, min=0, max=+inf)' % avg_h95)
     print('VS: %.3f (higher is better, min=0, max=1)' % avg_vs)
 
     if detection:

@@ -193,7 +193,7 @@ class TaskListQueue:
                 continue
             else:
                 ins['data'] = data
-                self.data_queue.put(ins, timeout=3600 * 2)
+                self.data_queue.put(ins, timeout=3600)
                 self.logger.debug(ins['id'] + ' just loaded')
         self.thread_states[thread_id] = 0
 
@@ -310,7 +310,6 @@ class AneurysmSegTestDataset(torch.utils.data.IterableDataset):
         self.img = []
         self.itk_image = []
         for input_file_id, input_file in enumerate(input_file_s):
-            print('input_file =', input_file)
             if input_type == 'dcm':
                 reader.SetFileNames(input_file)
             elif input_type == 'nii':
@@ -476,7 +475,6 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
 
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
     label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
-    # print('img_files = ', img_files)
 
     input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
@@ -491,7 +489,7 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
     assert len(patch_size) == len(overlap_step)
 
     match_size = True
-    for input_glo_img in input_glo_img_list:
+    for img_i, input_glo_img in enumerate(input_glo_img_list):
         match_size = match_size and label_glo_img.shape == input_glo_img.shape
         if not match_size:
             break
@@ -718,8 +716,9 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
         count = 0
         index_pos = 0
         random_shakes = [int(patch_size[i] * 0.3) for i in range(3)]
-        if random_seed is not None:
-            np.random.seed(random_seed)
+
+        random.shuffle(pos_region_centers)
+
         while count < sum_brain_mask_number:
             # positive sample
             for _ in range(pos_neg_ratio[0]):
@@ -741,16 +740,10 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
                     if brain_mask_glo_img[
                         starts[0] + patch_size[0] // 2, starts[1] + patch_size[1] // 2, starts[2] + patch_size[
                             2] // 2] > 0:
-                        # avoid inputing all black imgs
-                        clipped_mask = (input_glo_img_list[0][starts[0]:starts[0] + patch_size[0],
-                                        starts[1]:starts[1] + patch_size[1],
-                                        starts[2]:starts[2] + patch_size[2]] > 0).astype(np.float32)
-                        if np.mean(clipped_mask) > 0.05:
-                            patch_found = True
-                            yield _gen_patch(starts)
-                            count += 1
-                        else:
-                            logger.debug('all black inputs')
+                        patch_found = True
+                        yield _gen_patch(starts)
+                        count += 1
+
     # sliding window
     else:
         assert not balance_label, 'sliding_window do not support balance label now'
@@ -889,7 +882,6 @@ def get_non_zero_mask(input_img_list: typing.List[np.ndarray], same_non_zero: bo
             else:
                 break
 
-        print("starts -> ends:", starts, "->", ends)
         mask_list[-1][starts[0]:ends[0], starts[1]:ends[1], starts[2]:ends[2]] = True
 
     mask = mask_list[0].copy()
