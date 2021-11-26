@@ -17,6 +17,7 @@ from utils.model_utils import create_optimizer, create_lr_scheduler, CheckpointL
 from utils.project_utils import RunningAverage, maybe_create_path, write_dict_csv
 from utils.visualization import get_tensorboard_formatter, get_text_image
 
+
 class _ModelCore:
     def __init__(self,
                  config,
@@ -128,6 +129,23 @@ class _ModelCore:
             normalized_img = torch.stack(normalized_img, dim=1)
             return normalized_img
 
+        def _z_normalize_clamp(image):
+            if isinstance(image, list) or isinstance(image, tuple):
+                image_list = image
+            else:
+                image_list = [image]
+            normalized_img = []
+            for img in image_list:
+                img_clamp_min = torch.quantile(img, 0.005)
+                img_clamp_max = torch.quantile(img, 0.995)
+                torch.clamp(img, min=img_clamp_min, max=img_clamp_max, out=img)
+
+                norm_img = img - torch.mean(img)
+                norm_img = norm_img / torch.std(img)
+                normalized_img.append(norm_img)
+            normalized_img = torch.stack(normalized_img, dim=1)
+            return normalized_img
+
         def _minmax_normalize(image):
             if isinstance(image, list) or isinstance(image, tuple):
                 image_list = image
@@ -157,6 +175,7 @@ class _ModelCore:
         # These are the available normalization options:
         norm_dict = {'hu_norm': _hu_normalize,
                      'z_norm': _z_normalize,
+                     'z_norm_clamp': _z_normalize_clamp,
                      'minmax_norm': _minmax_normalize,
                      'pct_norm': _pct_normalize
                      }
@@ -565,9 +584,6 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
                     params.requires_grad = True
-                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.parameters():
-                    params.requires_grad = True
-                self.logger.info("Only the first layers are trainable")
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
@@ -595,11 +611,11 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'first_encoder_adaptor':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.encoder_blocks)))
-                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.localizer_adaptor)))
-                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for global patches' % min(
                     self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
 
                 for params in self.model.parameters():
@@ -622,11 +638,11 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'first_encoder_decoder':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.encoder_blocks)))
-                self.logger.info('Only the first %d decoder layers are trainable for local patches' % min(
+                self.logger.info('The first %d decoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.decoder_blocks)))
-                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for global patches' % min(
                     self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
 
                 for params in self.model.parameters():
@@ -650,13 +666,13 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'first_encoder_decoder_adaptor':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the first %d encoder layers are trainable for local patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.encoder_blocks)))
-                self.logger.info('Only the first %d decoder layers are trainable for local patches' % min(
+                self.logger.info('The first %d decoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.decoder_blocks)))
-                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.localizer_adaptor)))
-                self.logger.info('Only the first %d encoder layers are trainable for global patches' % min(
+                self.logger.info('The first %d encoder layers are trainable for global patches' % min(
                     self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
 
                 for params in self.model.parameters():
@@ -684,7 +700,7 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'last_decoder':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the last %d decoder layers and output conv are trainable for local patches' % min(
+                self.logger.info('The last %d decoder layers and output conv are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.decoder_blocks)))
 
                 for params in self.model.parameters():
@@ -703,10 +719,10 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'last_decoder_adaptor':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the last %d decoder layers are trainable for local patches' % min(
+                self.logger.info('The last %d decoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.decoder_blocks)))
-                self.logger.info('Only the last output layers are trainable for local patches')
-                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                self.logger.info('The last output layers are trainable for local patches')
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.localizer_adaptor)))
 
                 for params in self.model.parameters():
@@ -729,13 +745,13 @@ class Trainer(_ModelCore):
         elif self.trainable_layers == 'last_decoder_adaptor_global_feature_loss':
             if self.config['model']['classname'] == 'GLIANet':
 
-                self.logger.info('Only the last %d decoder layers are trainable for local patches' % min(
+                self.logger.info('The last %d decoder layers are trainable for local patches' % min(
                     self.depth_trainable_layers, len(self.model.decoder_blocks)))
-                self.logger.info('Only the last output layers are trainable for local patches')
-                self.logger.info('Only the first %d localizer adaptor layers are trainable' % min(
+                self.logger.info('The last output layers are trainable for local patches')
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.localizer_adaptor)))
-                self.logger.info('Only the localizer loss layers are trainable')
-                self.logger.info('Only the last %d global localizer layers are trainable' % min(
+                self.logger.info('The localizer loss layers are trainable')
+                self.logger.info('The last %d global localizer layers are trainable' % min(
                     self.depth_trainable_layers, len(self.model.global_localizer.feature_generator)))
 
                 for params in self.model.parameters():
@@ -747,6 +763,125 @@ class Trainer(_ModelCore):
                 for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
                     for params in getattr(self.model.global_localizer.feature_generator, "encode_block%d" % (
                             min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))
+                            - depth)).parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'last_decoder_adaptor_global_localizer_localizer_loss':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('The last %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('The last output layers are trainable for local patches')
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('The localizer loss layers are trainable')
+                self.logger.info('The last global localizer layers are trainable')
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for params in self.model.localizer_loss.parameters():
+                    params.requires_grad = True
+
+                for params in self.model.global_localizer.parameters():
+                    params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'last_decoder_adaptor_localizer_generator_localizer_loss':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('The last %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('The last output layers are trainable for local patches')
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('The localizer loss layers are trainable')
+                self.logger.info('Only the last %d localizer generator layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for params in self.model.localizer_loss.parameters():
+                    params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator))):
+                    for params in getattr(self.model.global_localizer.localizer_generator, "encode_block%d" % (
+                            min(self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator))
+                            - depth)).parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.localizer_adaptor))):
+                    for params in self.model.localizer_adaptor[depth].parameters():
+                        params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
+                    for params in self.model.decoder_blocks[-1-depth].parameters():
+                        params.requires_grad = True
+
+                for params in self.model.output_conv.parameters():
+                    params.requires_grad = True
+
+            else:
+                self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
+                                 self.config['model']['classname'])
+        elif self.trainable_layers == 'first_last_decoder_adaptor_localizer_generator_localizer_loss':
+            if self.config['model']['classname'] == 'GLIANet':
+
+                self.logger.info('The last %d decoder layers are trainable for local patches' % min(
+                    self.depth_trainable_layers, len(self.model.decoder_blocks)))
+                self.logger.info('The last output layers are trainable for local patches')
+                self.logger.info('The first %d localizer adaptor layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.localizer_adaptor)))
+                self.logger.info('The localizer loss layers are trainable')
+                self.logger.info('The last %d localizer generator layers are trainable' % min(
+                    self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator)))
+
+                for params in self.model.parameters():
+                    params.requires_grad = False
+
+                for params in self.model.encoder_blocks[0].residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.encoder_blocks[0].residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1.parameters():
+                    params.requires_grad = True
+                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
+                    params.requires_grad = True
+
+                for params in self.model.localizer_loss.parameters():
+                    params.requires_grad = True
+
+                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator))):
+                    for params in getattr(self.model.global_localizer.localizer_generator, "encode_block%d" % (
+                            min(self.depth_trainable_layers, len(self.model.global_localizer.localizer_generator))
                             - depth)).parameters():
                         params.requires_grad = True
 
@@ -779,7 +914,7 @@ class Trainer(_ModelCore):
                                  self.config['model']['classname'])
         elif self.trainable_layers == 'first_and_last':
             if self.config['model']['classname'] == 'GLIANet':
-                self.logger.info('Only the first and last layers are trainable')
+                self.logger.info('The first and last layers are trainable')
                 for params in self.model.parameters():
                     params.requires_grad = False
                 for params in self.model.encoder_blocks[0].residual_block1.conv1.parameters():
@@ -792,7 +927,6 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.output_conv.parameters():
                     params.requires_grad = True
-                self.logger.info("Only the first and last layers are trainable")
             else:
                 self.logger.info("Warning: freeze all layers but the first and last ones is not supported for "
                                  "model %s" % self.config['model']['classname'])
@@ -1163,7 +1297,7 @@ class Inferencer(_ModelCore):
                     patch_starts[2]:patch_ends[2]] += self.patch_interpolation_weight
                     if self.save_global:
                         global_map[patch_starts[0]:patch_ends[0], patch_starts[1]:patch_ends[1],
-                        patch_starts[2]:patch_ends[2]] += global_output[j]
+                        patch_starts[2]:patch_ends[2]] += self.patch_interpolation_weight * global_output[j]
 
                 time_all_iters += time.time() - since
                 print('\r\tprocessing procedure: %1.1f%%' % (

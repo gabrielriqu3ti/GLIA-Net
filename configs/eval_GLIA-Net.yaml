@@ -13,7 +13,7 @@ model:
   with_global: True  # whether use global positioning network
   global_type: attention_map
   global_out_channels: 2
-  in_channels: 2
+  in_channels: 1
   out_channels: 2
   num_classes: 2  # usually same to out_channels
   f_maps: [16, 32, 64, 128]
@@ -22,7 +22,6 @@ model:
 data:
   features:
     tof_img_file: image
-    struct_img_file: image
   labels:
     aneurysm_seg_file: mask
   normalization: z_norm
@@ -33,7 +32,7 @@ data:
   instance_list_file: aneurysm_seg.csv   # data information list
   eval_num_file: 0  # how many files used in each eval phase. 0 to use one whole eval epoch
   eval_pos_neg_ratio: [1, 1]  # ratio for positive and negative patches during eval
-  img_spacing: null  # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
+  img_spacing: [0.499999, 0.35714287, 0.35714287]  # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
   patch_size: [96, 96, 96]  # depth, width, height
   overlap_step: [48, 48, 48]  # only in sliding window data generating method
   num_io_workers: 1  # number of data_loading workers/processes
@@ -42,7 +41,7 @@ data:
 
 train:
   manual_seed: 12345  # random seed to reproduce results
-  batch_size: 2  # for each device/gpu
+  batch_size: 3  # for each device/gpu
   log_summary_every_n_iters: 20  # log to summary folder
   losses: # first loss is the main loss. this dict will be sent to LossWrapper as kwargs
     - name: ExpLoss  # local segmentation loss

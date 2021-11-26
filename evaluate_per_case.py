@@ -72,7 +72,9 @@ def study_evaluate(config, gt_file_or_folder, pred_file_or_folder, logger, devic
         pred_img = sitk.GetArrayFromImage(pred_img).astype(np.float32)
 
         gt_img = torch.unsqueeze(torch.tensor(gt_img, dtype=torch.int8, device=devices[0]), 0)  # [b, ...]
+        gt_img[gt_img == 2] = 0
         pred_img = torch.unsqueeze(torch.tensor(pred_img, dtype=torch.float32, device=devices[0]), 0)
+        pred_img[pred_img == 2] = 0
         pred_img = torch.stack([1.0 - pred_img, pred_img], 1)  # [b, c, ...]
 
         current_metrics = OrderedDict()

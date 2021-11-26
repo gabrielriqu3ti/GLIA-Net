@@ -74,7 +74,10 @@ class TaskListQueue:
                     % (subset, len(instances), self.num_workers, subset))
         self.logger = logger
         self.reading_file_fields = {**config['data']['features'], **config['data']['labels']}
-        self.spacing = config['data'].get('img_spacing')
+        if 'img_spacing' in config['data']:
+            self.spacing = np.array(config['data']['img_spacing'], np.float32)
+        else:
+            self.spacing = None
         if self.spacing is None:
             logger.debug('keep original image spacing and do not normalize the size')
 
@@ -172,7 +175,7 @@ class TaskListQueue:
                                 img['data'] = resize_image(img['data'], img['original_spacing'], self.spacing)
                             else:
                                 img['data'] = resize_segmentation(img['data'], img['original_spacing'], self.spacing)
-                            img['size'] = np.array(img['data'].shape)
+                            img['size'] = np.array(img['data'].shape, np.int32)
                         is_loaded = True
                     except Exception as e:
                         if retry_count < max_retry_num:
@@ -474,7 +477,7 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
     meta = {'id': data['id'], 'hospital': data['hospital'], 'spacing': data['data'][img_files[0]]['spacing']}
 
     label_glo_img = data_glo['aneurysm_seg_file']['data'].astype(np.int32)
-    label_glo_img[label_glo_img > 1] = 1  # consider treated or ruptured aneurysms as untreated and unruptured aneurysms
+    label_glo_img[label_glo_img == 2] = 0  # consider treated or ruptured aneurysms as normal regions
 
     input_glo_img_list = [data_glo[img_file]['data'].astype(np.float32) for img_file in img_files]
     if 'brain_mask_file' in data_glo:
@@ -604,6 +607,7 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
             rotation_type = config['train']['data_aug'].get('rotation', 'full')
             # Generate random values
             ran_flip = [np.random.rand() > 0.5 for _ in range(3)]
+            ran_gamma = max(0.7, 1 + 0.1 * np.random.standard_normal())
             if rotation_type == 'full':
                 ran_rot = [np.random.rand() > 0.5 for _ in range(3)]
                 ran_rot_90 = [np.random.rand() > 0.5 for _ in range(3)]
@@ -624,13 +628,17 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
 
             # Add Gaussian noise to patch inputs
             for patch_exam_ext_img_id in range(len(patch_exam_ext_img_list)):
-                patch_exam_ext_img_list[patch_exam_ext_img_id] += np.random.normal(0.0, 10.0,
+                patch_exam_ext_img_list[patch_exam_ext_img_id] += np.random.normal(0.0, 1.0,
                                                                                    patch_exam_ext_img_list[
                                                                                        patch_exam_ext_img_id].shape)
 
             patch_bundle = np.stack(patch_exam_ext_img_list, 0)
             patch_brain_mask_ext_img = np.expand_dims(patch_brain_mask_ext_img, 0)
             patch_label_ext_img = np.expand_dims(patch_label_ext_img, 0)
+
+            # Add random gamma correction to patches
+            patch_bundle[patch_bundle < 0] = 0  # power doesn't work for negative numbers
+            np.power(patch_bundle, ran_gamma, out=patch_bundle)
 
             # Add random flip to patches
             patch_bundle = random_flip_all(patch_bundle, ran_flip)
@@ -660,6 +668,10 @@ def ane_seg_patch_generator(data: dict, config: dict, logger: logging.Logger, re
             if with_global:
                 global_bundle = np.stack(global_exam_img_list, 0)
                 global_location_mask = np.expand_dims(global_location_mask, 0)
+
+                # Add random gamma correction to globals
+                global_bundle[global_bundle < 0] = 0  # power doesn't work for negative numbers
+                np.power(global_bundle, ran_gamma, out=global_bundle)
 
                 # Add random flip to globals
                 global_bundle = random_flip_all(global_bundle, ran_flip)
@@ -784,12 +796,13 @@ def get_positive_region_centers(label, return_object_wise_label=False):
         return centers
 
 
-def resize_image(image, old_spacing=None, new_spacing=None, new_shape=None, order=1):
+def resize_image(image, old_spacing=None, new_spacing=None, new_shape=None, order=3):
     assert new_shape is not None or (old_spacing is not None and new_spacing is not None)
+    tpe = image.dtype
     if new_shape is None:
         new_shape = tuple([int(np.round(old_spacing[i] / new_spacing[i] * float(image.shape[i]))) for i in range(3)])
-    resized_image = resize(image, new_shape, order=order, mode='edge', cval=0, anti_aliasing=False)
-    return resized_image
+    resized_image = resize(image.astype(np.float32), new_shape, order=order, mode='edge', cval=0, anti_aliasing=True)
+    return resized_image.astype(tpe)
 
 
 def resize_segmentation(segmentation: np.ndarray, old_spacing=None, new_spacing=None, new_shape=None, order=0, cval=0):
@@ -811,8 +824,9 @@ def resize_segmentation(segmentation: np.ndarray, old_spacing=None, new_spacing=
     tpe = segmentation.dtype
     assert len(segmentation.shape) == len(new_shape), "new shape must have same dimensionality as segmentation"
     if order == 0:
-        return resize(segmentation, new_shape, order, mode="constant", cval=cval, clip=True,
-                      anti_aliasing=False).astype(tpe)
+        segmentation_resized = resize(segmentation, new_shape, order, mode="constant", cval=cval, clip=True,
+                                      preserve_range=True, anti_aliasing=False)
+        return segmentation_resized.astype(tpe)
     else:
         unique_labels = np.unique(segmentation)
         reshaped = np.zeros(new_shape, dtype=segmentation.dtype)
@@ -907,9 +921,9 @@ def get_patch_interpolation_weight(shape: typing.Union[tuple, list], order: int)
         return np.ones(shape, np.float32)
     elif order == 1:
         # get indices in each dimension
-        c0 = np.tile(np.arange(shape[0]).reshape(shape[0], 1, 1), (1, shape[1], shape[2]))
-        c1 = np.tile(np.arange(shape[1]).reshape(1, shape[1], 1), (shape[0], 1, shape[2]))
-        c2 = np.tile(np.arange(shape[2]).reshape(1, 1, shape[2]), (shape[0], shape[1], 1))
+        c0 = np.tile(np.arange(shape[0]).reshape((shape[0], 1, 1)), (1, shape[1], shape[2]))
+        c1 = np.tile(np.arange(shape[1]).reshape((1, shape[1], 1)), (shape[0], 1, shape[2]))
+        c2 = np.tile(np.arange(shape[2]).reshape((1, 1, shape[2])), (shape[0], shape[1], 1))
 
         # weight more central voxels
         weight = sum(shape) - (abs(2*c0 + 1. - shape[0]) + abs(2*c1 + 1. - shape[1]) + abs(2*c2 + 1. - shape[2])) / 2
@@ -1055,7 +1069,7 @@ def random_rotate(img, dim, angle, is_mask=False, do_it=None):
     if is_mask:
         order = 0
     else:
-        order = 1
+        order = 3
 
     if angle is None:
         angle = 360 * np.random.rand()

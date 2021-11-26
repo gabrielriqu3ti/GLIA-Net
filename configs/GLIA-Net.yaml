@@ -13,7 +13,7 @@ model:
   with_global: True  # whether use global positioning network
   global_type: attention_map
   global_out_channels: 2
-  in_channels: 2
+  in_channels: 1
   out_channels: 2
   num_classes: 2  # usually same to out_channels
   f_maps: [16, 32, 64, 128]
@@ -22,7 +22,6 @@ model:
 data:
   features:
     tof_img_file: image
-    struct_img_file: image
   labels:
     aneurysm_seg_file: mask
   normalization: z_norm
@@ -36,7 +35,7 @@ data:
   debug_mode: False  # if true, one file will only generate a few patches.
   train_pos_neg_ratio: [1, 1]  # ratio for positive and negative patches during training
   eval_pos_neg_ratio: [1, 1]  # ratio for positive and negative patches during eval
-  img_spacing: null # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
+  img_spacing: [0.499999, 0.35714287, 0.35714287] # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
   patch_size: [96, 96, 96]  # depth, width, height
   overlap_step: [48, 48, 48]  # only in sliding window data generation method
   num_io_workers: 1  # number of data_loading workers/processes
@@ -46,8 +45,8 @@ data:
 train:
   manual_seed: null  # set seed for random initialization
   num_epoch: 3  # 10  # number of training epoch
-  batch_size: 2  # for each device/gpu
-  trainable_layers: all  # options are 'all', 'first', 'first_encoder', 'first_encoder_decoder', 'last' and 'first_and_last'
+  batch_size: 3  # for each device/gpu
+  trainable_layers: all  # options are 'all', 'first', 'first_encoder', 'first_encoder_decoder', 'last', 'first_and_last', etc
   depth_trainable_layers: 1  # options are '1' to '5' for the classic GLIA-Net. Only used for 'trainable_layers: first_encoder' and 'first_encoder_decoder'
   data_aug:
     rotation: full  # options are 'null', '90s', 'small' and 'full'

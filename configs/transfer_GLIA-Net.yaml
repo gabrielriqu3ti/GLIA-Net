@@ -14,7 +14,7 @@ model:
   global_type: attention_map
   global_out_channels: 2
   in_channels: 3
-  new_in_channels: 2
+  new_in_channels: 1
   out_channels: 2
   new_out_channels: 2
   num_classes: 2  # usually same to out_channels
@@ -24,7 +24,6 @@ model:
 data:
   features:
     tof_img_file: image
-    struct_img_file: image
   normalization: z_norm
   img_spacing: null  # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
   patch_size: [96, 96, 96]  # depth, width, height
@@ -32,7 +31,7 @@ data:
   num_proc_workers: 3  # number of data pre-processing workers/processes. set 0 to disable multi-processing.
 
 train:
-  batch_size: 2  # for each device/gpu
+  batch_size: 3  # for each device/gpu
   losses: # first loss is the main loss. this dict will be sent to LossWrapper as kwargs
     - name: ExpLoss   # local segmentation loss
       final_activation: softmax
