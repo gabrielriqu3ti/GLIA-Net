@@ -11,6 +11,7 @@ model:
   filename: GLIA-Net
   classname: GLIANet
   with_global: True  # whether use global positioning network
+  new_with_global: True
   global_type: attention_map
   global_out_channels: 2
   in_channels: 3
@@ -28,7 +29,7 @@ data:
   img_spacing: null  # set null if you don't want to change spacing. e.g. [0.5, 0.5, 0.5]
   patch_size: [96, 96, 96]  # depth, width, height
   overlap_step: [48, 48, 48]  # in sliding window data generating method
-  num_proc_workers: 3  # number of data pre-processing workers/processes. set 0 to disable multi-processing.
+  num_proc_workers: 0  # number of data pre-processing workers/processes. set 0 to disable multi-processing.
 
 train:
   batch_size: 3  # for each device/gpu

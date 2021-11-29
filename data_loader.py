@@ -801,7 +801,10 @@ def resize_image(image, old_spacing=None, new_spacing=None, new_shape=None, orde
     tpe = image.dtype
     if new_shape is None:
         new_shape = tuple([int(np.round(old_spacing[i] / new_spacing[i] * float(image.shape[i]))) for i in range(3)])
-    resized_image = resize(image.astype(np.float32), new_shape, order=order, mode='edge', cval=0, anti_aliasing=True)
+    if tuple(new_shape) != tuple(image.shape):
+        resized_image = resize(image.astype(np.float32), new_shape, order=order, mode='edge', cval=0, anti_aliasing=True)
+    else:
+        resized_image = image.copy()
     return resized_image.astype(tpe)
 
 
@@ -824,8 +827,11 @@ def resize_segmentation(segmentation: np.ndarray, old_spacing=None, new_spacing=
     tpe = segmentation.dtype
     assert len(segmentation.shape) == len(new_shape), "new shape must have same dimensionality as segmentation"
     if order == 0:
-        segmentation_resized = resize(segmentation, new_shape, order, mode="constant", cval=cval, clip=True,
-                                      preserve_range=True, anti_aliasing=False)
+        if tuple(new_shape) != tuple(segmentation.shape):
+            segmentation_resized = resize(segmentation, new_shape, order, mode="constant", cval=cval, clip=True,
+                                          preserve_range=True, anti_aliasing=False)
+        else:
+            segmentation_resized = segmentation.copy()
         return segmentation_resized.astype(tpe)
     else:
         unique_labels = np.unique(segmentation)

@@ -580,10 +580,11 @@ class Trainer(_ModelCore):
                     params.requires_grad = True
                 for params in self.model.encoder_blocks[0].residual_block1.res_conv.parameters():
                     params.requires_grad = True
-                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1.parameters():
-                    params.requires_grad = True
-                for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
-                    params.requires_grad = True
+                if self.model.with_global:
+                    for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.conv1.parameters():
+                        params.requires_grad = True
+                    for params in self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv.parameters():
+                        params.requires_grad = True
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
@@ -602,9 +603,10 @@ class Trainer(_ModelCore):
                     for params in self.model.encoder_blocks[depth].residual_block1.parameters():
                         params.requires_grad = True
 
-                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
-                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
-                        params.requires_grad = True
+                if self.model.with_global:
+                    for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                        for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                            params.requires_grad = True
             else:
                 self.logger.info("Warning: freeze all layers but the first ones is not supported for model %s" %
                                  self.config['model']['classname'])
@@ -652,9 +654,10 @@ class Trainer(_ModelCore):
                     for params in self.model.encoder_blocks[depth].residual_block1.parameters():
                         params.requires_grad = True
 
-                for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
-                    for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
-                        params.requires_grad = True
+                if self.model.with_global:
+                    for depth in range(min(self.depth_trainable_layers, len(self.model.global_localizer.feature_generator))):
+                        for params in getattr(self.model.global_localizer.feature_generator, 'encode_block' + str(depth + 1)).residual_block1.parameters():
+                            params.requires_grad = True
 
                 for depth in range(min(self.depth_trainable_layers, len(self.model.decoder_blocks))):
                     for params in self.model.decoder_blocks[-1-depth].parameters():
@@ -1390,6 +1393,12 @@ class Transfer(_ModelCore):
 
             self.model.global_localizer.feature_generator.encode_block1.residual_block1.res_conv = torch.nn.Conv3d(
                 new_input_channels, global_output_channels, 1, padding=0, bias=False)
+
+            if not self.config['model']['new_with_global']:
+                if self.model.with_global:
+                    del self.model.global_localizer, self.model.localizer_adaptor, self.model.localizer_loss
+                self.model.with_global = True
+
         else:
             raise ValueError('Unrecognized classname %s' % self.config['model']['classname'])
 
