@@ -15,6 +15,8 @@ import numpy as np
 import SimpleITK as sitk
 from scipy import ndimage
 import scipy.spatial
+import signal
+from contextlib import contextmanager
 
 import evaluation_detection as eval_det
 from utils.project_utils import read_dict_csv
@@ -38,7 +40,7 @@ def main(output_dir, annotation_dir, location_dir, metadata_file, threshold):
     if not dataset_metadata_path.exists():
         raise Exception('dataset metadata not found at %s' % dataset_metadata_path.absolute())
 
-    metadata = read_dict_csv(dataset_metadata_path)
+    metadata = read_dict_csv(dataset_metadata_path.absolute().as_posix())
     metadata = [exam for exam in metadata if exam['subset'] == 'eval']
 
     dsc_list = []
@@ -152,6 +154,13 @@ def get_dsc(test_image, result_image):
 def get_hausdorff(test_image, result_image):
     """Compute the Hausdorff distance."""
 
+    result_np = sitk.GetArrayViewFromImage(result_image)
+    output_np = sitk.GetArrayViewFromImage(test_image)
+    if not np.any(result_np) or not np.any(output_np):
+        del result_np, output_np
+        return np.nan
+    del result_np, output_np
+
     result_statistics = sitk.StatisticsImageFilter()
     result_statistics.Execute(result_image)
   
@@ -171,15 +180,35 @@ def get_hausdorff(test_image, result_image):
 
     test_coordinates = [test_image.TransformIndexToPhysicalPoint(x) for x in h_test_indices]
     result_coordinates = [test_image.TransformIndexToPhysicalPoint(x) for x in h_result_indices]
-    
+
+    def raise_timeout(signum, frame):
+        raise TimeoutError
+
+    @contextmanager
+    def timeout(time):
+        signal.signal(signal.SIGALRM, raise_timeout)
+        signal.alarm(time)
+        try:
+            yield
+        except TimeoutError:
+            pass
+        finally:
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+
     def get_distances_from_a_to_b(a, b):
         kd_tree = scipy.spatial.KDTree(a, leafsize=100)
         return kd_tree.query(b, k=1, eps=0, p=2)[0]
 
-    d_test_to_result = get_distances_from_a_to_b(test_coordinates, result_coordinates)
-    d_result_to_test = get_distances_from_a_to_b(result_coordinates, test_coordinates)
+    hd = None
+    timeout_max = 60  # s
+    with timeout(timeout_max):
+        d_test_to_result = get_distances_from_a_to_b(test_coordinates, result_coordinates)
+        d_result_to_test = get_distances_from_a_to_b(result_coordinates, test_coordinates)
 
-    hd = max(np.percentile(d_test_to_result, 95), np.percentile(d_result_to_test, 95))
+        hd = max(np.percentile(d_test_to_result, 95), np.percentile(d_result_to_test, 95))
+    if hd is None:
+        print(f'Hausdorff distance 95% takes more {timeout_max} s to be calculated')
+        return np.nan
     
     return hd
 
